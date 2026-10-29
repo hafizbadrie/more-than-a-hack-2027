@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Frame Seeker</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@byomakase/omakase-player@latest/dist/style.min.css">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "hls.js": "https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.mjs",
+        "@omakase-player": "https://cdn.jsdelivr.net/npm/@byomakase/omakase-player@latest/dist/omakase-player.es.min.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <main>
+    <div class="player-layout">
+      <div class="seek-row">
+        <form id="seek-form">
+          <input id="frame-id" type="text" inputmode="numeric" placeholder="Frame ID" autocomplete="off">
+          <button type="submit">Go</button>
+        </form>
+      </div>
+      <div class="player-column">
+        <div id="omakase-player"></div>
+      </div>
+      <aside id="frame-details" aria-label="Frame details">
+        <h2>Frame details</h2>
+        <p class="frame-number">Current frame ID: <output id="current-frame">—</output></p>
+        <div id="frame-tags" aria-live="polite">Loading tags...</div>
+      </aside>
+      <section id="tracking-data" aria-label="Tracking data">
+        <h2>Tracking data</h2>
+        <div id="tracking-table">Loading tracking data...</div>
+      </section>
+    </div>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
