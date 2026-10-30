@@ -10,6 +10,8 @@ Single-page video player (Omakase Player) that seeks to an exact frame ID and pa
 - A modern browser (Chrome recommended).
 - Internet access: Omakase Player and hls.js are loaded from the jsDelivr CDN.
 - The video at `data/tactical/BAR-ATH_tactical.mp4` (relative to the repo root).
+- The CSV at `data/tactical/BAR-ATH_tactical_ds.csv`. If it does not exist, run
+  [`convert_atd_to_csv.ipynb`](../starter/convert_atd_to_csv.ipynb) first.
 
 ## Run
 
@@ -19,7 +21,8 @@ Serve the **repo root** (not `frame-seeker/`), because the page loads the video 
 npx http-server . -p 8000 -c-1
 ```
 
-Then open <http://localhost:8000/frame-seeker/>.
+If the server is already running, skip the command. Then open
+<http://localhost:8000/frame-seeker/>.
 
 `-c-1` disables caching so edits show up on a normal reload.
 

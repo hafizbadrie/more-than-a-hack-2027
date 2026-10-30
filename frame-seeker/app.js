@@ -48,10 +48,44 @@ function renderFrameTags(time) {
   }
 }
 
-function makeTable(headers, rows) {
+let objectSort = { column: 0, dir: 1 };
+
+function compareValues(a, b) {
+  const an = a === '' ? NaN : Number(a);
+  const bn = b === '' ? NaN : Number(b);
+  if (!Number.isNaN(an) && !Number.isNaN(bn)) return an - bn;
+  if (a === b) return 0;
+  if (a === '') return 1;
+  if (b === '') return -1;
+  return String(a).localeCompare(String(b));
+}
+
+function makeTable(headers, rows, onSort) {
   const table = document.createElement('table');
   const head = table.createTHead().insertRow();
-  for (const h of headers) head.append(Object.assign(document.createElement('th'), { textContent: h }));
+  headers.forEach((h, i) => {
+    const th = Object.assign(document.createElement('th'), { textContent: h });
+    if (onSort) {
+      th.style.cursor = 'pointer';
+      th.tabIndex = 0;
+      th.title = `Sort by ${h}`;
+      const active = objectSort.column === i;
+      th.setAttribute('aria-sort', active ? (objectSort.dir === 1 ? 'ascending' : 'descending') : 'none');
+      if (active) th.textContent = `${h} ${objectSort.dir === 1 ? '▲' : '▼'}`;
+      const activate = () => {
+        objectSort = { column: i, dir: active ? -objectSort.dir : 1 };
+        onSort();
+      };
+      th.addEventListener('click', activate);
+      th.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          activate();
+        }
+      });
+    }
+    head.append(th);
+  });
   const body = table.createTBody();
   for (const row of rows) {
     const tr = body.insertRow();
@@ -76,15 +110,21 @@ function renderTracking(frameId) {
 
   const cells = line.split(',');
   const col = Object.fromEntries(dsHeader.map((name, i) => [name, cells[i]]));
-  const info = ['period_id', 'timestamp', 'frame_id', 'ball_state', 'ball_owning_team_id', 'ball_x', 'ball_y', 'ball_z', 'ball_speed'];
+  const info = ['period_id', 'timestamp', 'frame_id', 'ball_x', 'ball_y', 'ball_speed'];
   trackingTable.append(makeTable(info, [info.map((k) => fmt(col[k]))]));
 
   const rows = [];
   for (let id = 1; col[`${id}_x`] !== undefined; id++) {
-    const values = ['x', 'y', 'd', 's'].map((k) => col[`${id}_${k}`]);
+    const values = ['x', 'y', 's', 'x_m', 'y_m', 'ball_dist_m', 'team']
+      .map((k) => col[`${id}_${k}`]);
     if (values.some((v) => v !== '')) rows.push([id, ...values.map(fmt)]);
   }
-  trackingTable.append(makeTable(['object', 'x', 'y', 'd', 's'], rows));
+  const sorted = rows.slice().sort((a, b) => objectSort.dir * compareValues(a[objectSort.column], b[objectSort.column]));
+  trackingTable.append(makeTable(
+    ['object', 'x', 'y', 's', 'x_m', 'y_m', 'ball_dist_m', 'team'],
+    sorted,
+    () => renderTracking(frameId),
+  ));
 }
 
 function updateFrameDetails(time) {
