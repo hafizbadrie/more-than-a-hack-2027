@@ -32,10 +32,18 @@
         <p class="frame-number">Current frame ID: <output id="current-frame">—</output></p>
         <div id="frame-tags" aria-live="polite">Loading tags...</div>
       </aside>
-      <section id="tracking-data" aria-label="Tracking data">
-        <h2>Tracking data</h2>
-        <div id="tracking-table">Loading tracking data...</div>
-      </section>
+      <div class="supporting-layout">
+        <section id="tracking-data" aria-label="Tracking data">
+          <h2>Tracking data</h2>
+          <div id="tracking-table">Loading tracking data...</div>
+        </section>
+        <section id="broadcast-video" aria-label="Broadcast video">
+          <h2>Broadcast</h2>
+          <video controls preload="metadata">
+            <source src="../data/broadcast/BAR-ATH_broadcast.mp4" type="video/mp4">
+          </video>
+        </section>
+      </div>
     </div>
   </main>
   <script type="module" src="app.js"></script>

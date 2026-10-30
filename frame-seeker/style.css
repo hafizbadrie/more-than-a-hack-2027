@@ -65,9 +65,16 @@ main {
   margin: 0 0 8px;
 }
 
-#tracking-data {
+.supporting-layout {
   grid-column: 1 / -1;
   grid-row: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+#tracking-data {
   min-width: 0;
   overflow-x: auto;
 }
@@ -77,10 +84,27 @@ main {
   font-size: 1rem;
 }
 
+#broadcast-video h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
 #tracking-data table {
+  width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.85rem;
   margin-bottom: 12px;
+}
+
+#tracking-data .object-tracking-table {
+  table-layout: auto;
+}
+
+#tracking-data .object-tracking-table th,
+#tracking-data .object-tracking-table td {
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 #tracking-data th,
@@ -88,6 +112,7 @@ main {
   padding: 4px 10px;
   border: 1px solid #d5d9dc;
   text-align: right;
+  overflow-wrap: anywhere;
 }
 
 #tracking-data th {
@@ -101,6 +126,13 @@ main {
 .player-column {
   grid-column: 1;
   grid-row: 2;
+}
+
+#broadcast-video video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
 }
 
 #seek-form {
@@ -127,7 +159,8 @@ main {
     grid-row: auto;
   }
 
-  #tracking-data {
+  .supporting-layout {
+    grid-template-columns: minmax(0, 1fr);
     grid-row: auto;
   }
 
@@ -137,4 +170,23 @@ main {
     contain: none;
     max-height: 50vh;
   }
+}
+
+#omakase-player,
+#broadcast-video {
+  position: relative;
+}
+
+.video-missing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: #000;
+  color: #fff;
+  text-align: center;
+  overflow-wrap: anywhere;
+  z-index: 10;
 }

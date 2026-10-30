@@ -120,11 +120,13 @@ function renderTracking(frameId) {
     if (values.some((v) => v !== '')) rows.push([id, ...values.map(fmt)]);
   }
   const sorted = rows.slice().sort((a, b) => objectSort.dir * compareValues(a[objectSort.column], b[objectSort.column]));
-  trackingTable.append(makeTable(
+  const objectTable = makeTable(
     ['object', 'x', 'y', 's', 'x_m', 'y_m', 'ball_dist_m', 'team'],
     sorted,
     () => renderTracking(frameId),
-  ));
+  );
+  objectTable.className = 'object-tracking-table';
+  trackingTable.append(objectTable);
 }
 
 function updateFrameDetails(time) {
@@ -216,6 +218,26 @@ const player = new OmakasePlayer({
 player.loadMainMedia(VIDEO_URL, { frameRate: FPS }).subscribe({
   error: (err) => console.error('Failed to load video', err),
 });
+
+function showMissingVideo(container, url) {
+  if (container.querySelector('.video-missing')) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'video-missing';
+  overlay.textContent = `Video doesn't exist: ${url}`;
+  container.appendChild(overlay);
+}
+
+function checkVideoExists(url, container) {
+  fetch(url, { method: 'HEAD' })
+    .then((response) => {
+      if (!response.ok) showMissingVideo(container, url);
+    })
+    .catch(() => showMissingVideo(container, url));
+}
+
+checkVideoExists(VIDEO_URL, document.getElementById('omakase-player'));
+const broadcastSource = document.querySelector('#broadcast-video source');
+checkVideoExists(broadcastSource.getAttribute('src'), document.getElementById('broadcast-video'));
 
 function attachVideoTimeListeners() {
   const video = document.querySelector('#omakase-player video');

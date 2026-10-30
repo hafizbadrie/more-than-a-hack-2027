@@ -1,6 +1,6 @@
 # Frame Seeker
 
-Single-page video player (Omakase Player) that seeks to an exact frame ID and pauses there.
+Single-page frame-seeking tool for the tactical video. Enter a frame ID to seek the tactical player to that frame and pause; the page also shows the current frame's smart-tagging labels and tracking data. A separate Broadcast player displays the match broadcast video below.
 
 ## Prerequisites
 
@@ -9,8 +9,10 @@ Single-page video player (Omakase Player) that seeks to an exact frame ID and pa
   - To verify installation, run: `node --version` and `npx --version`
 - A modern browser (Chrome recommended).
 - Internet access: Omakase Player and hls.js are loaded from the jsDelivr CDN.
-- The video at `data/tactical/BAR-ATH_tactical.mp4` (relative to the repo root).
-- The CSV at `data/tactical/BAR-ATH_tactical_ds.csv`. If it does not exist, run
+- The tactical video at `data/tactical/BAR-ATH_tactical.mp4` and broadcast video at
+  `data/broadcast/BAR-ATH_broadcast.mp4` (relative to the repo root).
+- The smart-tagging data at `data/tactical/BAR-ATH_tactical_smart_tagging.xml`.
+- The tracking CSV at `data/tactical/BAR-ATH_tactical_ds.csv`. If it does not exist, run
   [`convert_atd_to_csv.ipynb`](../starter/convert_atd_to_csv.ipynb) first.
 
 ## Run
