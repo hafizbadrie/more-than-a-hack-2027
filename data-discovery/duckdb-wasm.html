@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DuckDB-Wasm SQL playground</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #fafafa; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  #status { font-size: 13px; color: #555; margin: 6px 0; }
+  #editor { border: 1px solid #ccc; background: #fff; }
+  #editor .cm-editor { min-height: 140px; }
+  button { margin-top: 8px; padding: 6px 14px; font-size: 14px; cursor: pointer; }
+  #result { margin-top: 12px; overflow: auto; max-height: 60vh; background: #fff; border: 1px solid #ddd; }
+  table { border-collapse: collapse; font-size: 12px; font-family: ui-monospace, monospace; }
+  th, td { border: 1px solid #e0e0e0; padding: 3px 8px; white-space: nowrap; }
+  th { position: sticky; top: 0; background: #f0f0f0; }
+  .error { color: #b00020; padding: 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>DuckDB-Wasm &mdash; table <code>tactical</code> (BAR-ATH_tactical_ds.csv)</h1>
+<div id="status">Loading DuckDB…</div>
+<div id="editor"></div>
+<button id="run" disabled>Run (Ctrl/Cmd+Enter)</button>
+<div id="result"></div>
+
+<script type="module">
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@latest/+esm";
+import { EditorView, basicSetup } from "https://esm.sh/codemirror@6.0.1";
+import { keymap } from "https://esm.sh/@codemirror/view@6";
+import { Prec } from "https://esm.sh/@codemirror/state@6";
+import { sql } from "https://esm.sh/@codemirror/lang-sql@6?deps=@codemirror/state@6,@codemirror/view@6";
+
+const CSV_CANDIDATES = [
+  "../data/tactical/BAR-ATH_tactical_ds.csv",
+  "/data/tactical/BAR-ATH_tactical_ds.csv",
+  "data/tactical/BAR-ATH_tactical_ds.csv",
+];
+const statusEl = document.getElementById("status");
+const resultEl = document.getElementById("result");
+const runBtn = document.getElementById("run");
+
+const DEFAULT_SQL = `SELECT period_id, ball_owning_team_id, count(*) AS frames,
+       round(avg(ball_speed), 2) AS avg_ball_speed
+FROM tactical
+GROUP BY ALL
+ORDER BY 1, 2;`;
+
+const view = new EditorView({
+  doc: DEFAULT_SQL,
+  extensions: [
+    basicSetup,
+    sql(),
+    Prec.highest(keymap.of([{ key: "Mod-Enter", run: () => { run(); return true; } }])),
+  ],
+  parent: document.getElementById("editor"),
+});
+
+// Bundle selection + cross-origin worker bootstrap
+const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+const workerUrl = URL.createObjectURL(
+  new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
+);
+const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), new Worker(workerUrl));
+await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+URL.revokeObjectURL(workerUrl);
+const conn = await db.connect();
+
+statusEl.textContent = "Loading CSV…";
+let buf = null;
+for (const url of CSV_CANDIDATES) {
+  const res = await fetch(url).catch(() => null);
+  if (res && res.ok && !(res.headers.get("content-type") || "").includes("text/html")) {
+    buf = new Uint8Array(await res.arrayBuffer());
+    break;
+  }
+}
+if (!buf) {
+  statusEl.textContent = "Could not load the CSV. Serve the repo root over HTTP (python3 -m http.server) and open /experiment/duckdb-wasm.html.";
+  throw new Error("CSV not found");
+}
+await db.registerFileBuffer("tactical.csv", buf);
+await conn.query(`CREATE TABLE tactical AS SELECT * FROM read_csv('tactical.csv', header=true, sample_size=-1)`);
+const n = (await conn.query("SELECT count(*) AS n FROM tactical")).toArray()[0].n;
+statusEl.textContent = `Ready — ${n} rows loaded into table "tactical".`;
+runBtn.disabled = false;
+
+function render(table) {
+  const cols = table.schema.fields.map(f => f.name);
+  const rows = table.toArray();
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const shown = rows.slice(0, 1000);
+  let html = "<table><thead><tr>" + cols.map(c => `<th>${esc(c)}</th>`).join("") + "</tr></thead><tbody>";
+  for (const r of shown) {
+    html += "<tr>" + cols.map(c => {
+      const v = r[c];
+      return `<td>${v === null ? "<i>null</i>" : esc(typeof v === "bigint" ? v.toString() : v)}</td>`;
+    }).join("") + "</tr>";
+  }
+  resultEl.innerHTML = html + "</tbody></table>";
+  return rows.length;
+}
+
+async function run() {
+  if (runBtn.disabled) return;
+  const t0 = performance.now();
+  try {
+    const table = await conn.query(view.state.doc.toString());
+    const total = render(table);
+    statusEl.textContent = `${total} row(s) in ${(performance.now() - t0).toFixed(0)} ms` +
+      (total > 1000 ? " (showing first 1000)" : "");
+  } catch (e) {
+    resultEl.innerHTML = `<div class="error">${String(e.message ?? e).replace(/</g, "&lt;")}</div>`;
+    statusEl.textContent = "Error";
+  }
+}
+runBtn.addEventListener("click", run);
+</script>
+</body>
+</html>
