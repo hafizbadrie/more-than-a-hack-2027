@@ -13,7 +13,7 @@ Single-page frame-seeking tool for the tactical video. Enter a frame ID to seek 
   `data/broadcast/BAR-ATH_broadcast.mp4` (relative to the repo root).
 - The smart-tagging data at `data/tactical/BAR-ATH_tactical_smart_tagging.xml`.
 - The tracking CSV at `data/tactical/BAR-ATH_tactical_ds.csv`. If it does not exist, run
-  [`convert_atd_to_csv.ipynb`](../starter/convert_atd_to_csv.ipynb) first.
+  [`mp_dataprep.ipynb`](../starter/mp_dataprep.ipynb) first.
 
 ## Run
 

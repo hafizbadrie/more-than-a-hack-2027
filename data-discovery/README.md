@@ -3,7 +3,7 @@
 ## Prerequisites
 
 You need `data/tactical/BAR-ATH_tactical_ds.csv`. If it does not exist, run
-[`convert_atd_to_csv.ipynb`](../starter/convert_atd_to_csv.ipynb) first.
+[`mp_dataprep.ipynb`](../starter/mp_dataprep.ipynb) first.
 
 ## Run
 
