@@ -43,6 +43,9 @@ def build_catalog():
             "raw_tactical": CSVDataset(
                 filepath=str(REPO / "data/tactical/BAR-ATH_tactical_sample.csv")
             ),
+            "raw_smart_tag": CSVDataset(
+                filepath=str(REPO / "data/tactical/BAR-ATH_tactical_smart_tagging_sample.csv")
+            ),
             "ingested": MemoryDataset(),
             "cleaned": MemoryDataset(),
             "features": MemoryDataset(),
