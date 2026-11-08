@@ -53,3 +53,14 @@ def extract_nearest_player_ball_distance(
     out.loc[team_a_is_nearest, "nearest_player_team"] = params["team_a"]
     out.loc[team_b_is_nearest, "nearest_player_team"] = params["team_b"]
     return out
+
+
+def extract_possession_advantage(
+    df: pd.DataFrame, params: dict = PARAMS
+) -> pd.DataFrame:
+    """Add the signed closest-player distance gap from team A's perspective."""
+    out = df.copy()
+    out["possession_advantage"] = (
+        out["min_team_b_dist"] - out["min_team_a_dist"]
+    )
+    return out

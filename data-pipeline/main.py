@@ -8,7 +8,10 @@ from kedro_datasets.pandas import CSVDataset
 
 from stages.clean import clean
 from stages.export import export
-from stages.feature_extraction_dani import extract_nearest_player_ball_distance
+from stages.feature_extraction_dani import (
+    extract_nearest_player_ball_distance,
+    extract_possession_advantage,
+)
 from stages.features import build_features
 from stages.ingest import ingest
 
@@ -46,8 +49,17 @@ def build_pipeline():
                 name="nearest_player_ball_distance",
             ),
             node(
+                extract_possession_advantage,
+                [
+                    "features_nearest_player_ball_distance",
+                    "params:feature_extraction_dani",
+                ],
+                "features_possession_advantage",
+                name="possession_advantage",
+            ),
+            node(
                 export,
-                "features_nearest_player_ball_distance",
+                "features_possession_advantage",
                 "final",
                 name="export",
             ),
@@ -68,6 +80,7 @@ def build_catalog():
             "cleaned": MemoryDataset(),
             "features": MemoryDataset(),
             "features_nearest_player_ball_distance": MemoryDataset(),
+            "features_possession_advantage": MemoryDataset(),
             "final": CSVDataset(
                 filepath=str(ROOT / "output/tactical_processed.csv"),
                 save_args={"index": False},
