@@ -53,6 +53,9 @@ data/*
 # insurance against it being recreated in here by habit.
 organizers/
 
+# Local design notes produced while iterating on pipeline features.
+docs/
+
 # -- editors and build artifacts ---------------------------------------------------------------
 .idea/
 .vscode/

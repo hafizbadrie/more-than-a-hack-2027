@@ -8,6 +8,7 @@ from kedro_datasets.pandas import CSVDataset
 
 from stages.clean import clean
 from stages.export import export
+from stages.feature_extraction_dani import extract_nearest_player_ball_distance
 from stages.features import build_features
 from stages.ingest import ingest
 
@@ -15,6 +16,12 @@ ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 
 PARAMS = {"smoothing_window": 5}
+FEATURE_EXTRACTION_DANI_PARAMS = {
+    "team_a": "Barcelona",
+    "team_b": "Atletic Club",
+    "distance_suffix": "_ball_dist_m",
+    "team_suffix": "_team",
+}
 MATCH_INFO = {"match_id": "BAR-ATH", "home_team": "BAR", "away_team": "ATH"}
 
 
@@ -32,7 +39,18 @@ def build_pipeline():
                 "features",
                 name="features",
             ),
-            node(export, "features", "final", name="export"),
+            node(
+                extract_nearest_player_ball_distance,
+                ["features", "params:feature_extraction_dani"],
+                "features_nearest_player_ball_distance",
+                name="nearest_player_ball_distance",
+            ),
+            node(
+                export,
+                "features_nearest_player_ball_distance",
+                "final",
+                name="export",
+            ),
         ]
     )
 
@@ -49,11 +67,15 @@ def build_catalog():
             "ingested": MemoryDataset(),
             "cleaned": MemoryDataset(),
             "features": MemoryDataset(),
+            "features_nearest_player_ball_distance": MemoryDataset(),
             "final": CSVDataset(
                 filepath=str(ROOT / "output/tactical_processed.csv"),
                 save_args={"index": False},
             ),
             "params:features": MemoryDataset(PARAMS),
+            "params:feature_extraction_dani": MemoryDataset(
+                FEATURE_EXTRACTION_DANI_PARAMS
+            ),
             "match_info": MemoryDataset(MATCH_INFO),
         }
     )
