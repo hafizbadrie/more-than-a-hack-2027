@@ -5,15 +5,13 @@ from kedro.io import DataCatalog, MemoryDataset
 from kedro.pipeline import node, pipeline
 from kedro.runner import SequentialRunner
 from kedro_datasets.pandas import CSVDataset
-
 from stages.clean import clean
 from stages.export import export
 from stages.feature_extraction_dani import (
-    extract_nearest_player_ball_distance,
-    extract_possession_advantage,
-)
+    extract_nearest_player_ball_distance, extract_possession_advantage)
 from stages.features import build_features
 from stages.ingest import ingest
+from stages.smart_tags import build_tag_features
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
@@ -57,12 +55,21 @@ def build_pipeline():
                 "features_possession_advantage",
                 name="possession_advantage",
             ),
+            # node(
+            #     export,
+            #     "features_possession_advantage",
+            #     "final",
+            #     name="export",
+            # ),
+            # Smart Tagging features joined on the video frame. "raw_smart_tag" is
+            # the events CSV (code, Team, Type, Half, ..., start_frame, end_frame).
             node(
-                export,
-                "features_possession_advantage",
-                "final",
-                name="export",
+                build_tag_features,
+                ["features_possession_advantage", "raw_smart_tag", "params:features", "match_info"],
+                "features_tagged",
+                name="tag_features",
             ),
+            node(export, "features_tagged", "final", name="export"),
         ]
     )
 
@@ -81,6 +88,7 @@ def build_catalog():
             "features": MemoryDataset(),
             "features_nearest_player_ball_distance": MemoryDataset(),
             "features_possession_advantage": MemoryDataset(),
+            "features_tagged": MemoryDataset(),
             "final": CSVDataset(
                 filepath=str(ROOT / "output/tactical_processed.csv"),
                 save_args={"index": False},
