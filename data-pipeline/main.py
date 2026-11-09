@@ -8,7 +8,10 @@ from kedro_datasets.pandas import CSVDataset
 from stages.clean import clean
 from stages.export import export
 from stages.feature_extraction_dani import (
-    extract_nearest_player_ball_distance, extract_possession_advantage)
+    extract_nearest_player_ball_distance,
+    extract_possession_advantage, 
+    extract_player_density,
+)
 from stages.features import build_features
 from stages.ingest import ingest
 from stages.smart_tags import build_tag_features
@@ -22,6 +25,7 @@ FEATURE_EXTRACTION_DANI_PARAMS = {
     "team_b": "Atletic Club",
     "distance_suffix": "_ball_dist_m",
     "team_suffix": "_team",
+    "density_radii": [1.0, 2.0, 5.0],
 }
 MATCH_INFO = {"match_id": "BAR-ATH", "home_team": "BAR", "away_team": "ATH"}
 
@@ -29,8 +33,18 @@ MATCH_INFO = {"match_id": "BAR-ATH", "home_team": "BAR", "away_team": "ATH"}
 def build_pipeline():
     return pipeline(
         [
-            node(ingest, "raw_tactical", "ingested", name="ingest"),
-            node(clean, "ingested", "cleaned", name="clean"),
+            node(
+                ingest,
+                "raw_tactical",
+                "ingested",
+                name="ingest",
+            ),
+            node(
+                clean,
+                "ingested",
+                "cleaned",
+                name="clean",
+            ),
             # One stage, several inputs: "cleaned" comes from a MemoryDataset
             # (output of the previous stage), "params:features" and "match_info"
             # come from plain dicts (MemoryDataset / direct dict assignment).
@@ -40,12 +54,14 @@ def build_pipeline():
                 "features",
                 name="features",
             ),
+            # Feature 1: Nearest player-ball distance
             node(
                 extract_nearest_player_ball_distance,
                 ["features", "params:feature_extraction_dani"],
                 "features_nearest_player_ball_distance",
                 name="nearest_player_ball_distance",
             ),
+            # Feature 2: Possession advantage
             node(
                 extract_possession_advantage,
                 [
@@ -55,23 +71,38 @@ def build_pipeline():
                 "features_possession_advantage",
                 name="possession_advantage",
             ),
-            # node(
-            #     export,
-            #     "features_possession_advantage",
-            #     "final",
-            #     name="export",
-            # ),
-            # Smart Tagging features joined on the video frame. "raw_smart_tag" is
-            # the events CSV (code, Team, Type, Half, ..., start_frame, end_frame).
+            # Feature 3: Player density around the ball
+            node(
+                extract_player_density,
+                [
+                    "features_possession_advantage",
+                    "params:feature_extraction_dani",
+                ],
+                "features_player_density",
+                name="player_density",
+            ),
+            # Smart Tagging: Join event information to tracking features
             node(
                 build_tag_features,
-                ["features_possession_advantage", "raw_smart_tag", "params:features", "match_info"],
+                [
+                    "features_player_density",
+                    "raw_smart_tag",
+                    "params:features",
+                    "match_info",
+                ],
                 "features_tagged",
                 name="tag_features",
             ),
-            node(export, "features_tagged", "final", name="export"),
+            # Export final processed dataset
+            node(
+                export,
+                "features_tagged",
+                "final",
+                name="export",
+            ),
         ]
     )
+
 
 
 def build_catalog():
@@ -88,6 +119,7 @@ def build_catalog():
             "features": MemoryDataset(),
             "features_nearest_player_ball_distance": MemoryDataset(),
             "features_possession_advantage": MemoryDataset(),
+            "features_player_density": MemoryDataset(),
             "features_tagged": MemoryDataset(),
             "final": CSVDataset(
                 filepath=str(ROOT / "output/tactical_processed.csv"),

@@ -7,6 +7,7 @@ PARAMS = {
     "team_b": "Atletic Club",
     "distance_suffix": "_ball_dist_m",
     "team_suffix": "_team",
+    "density_radii": [1.0, 2.0, 5.0],
 }
 
 
@@ -63,4 +64,87 @@ def extract_possession_advantage(
     out["possession_advantage"] = (
         out["min_team_b_dist"] - out["min_team_a_dist"]
     )
+    return out
+
+def extract_player_density(
+    df: pd.DataFrame, params: dict = PARAMS
+) -> pd.DataFrame:
+    """
+    Feature 3: Count the number of players around the ball.
+
+    Calculates player density for multiple radii (default: 1m, 2m, 5m).
+
+    Output:
+        team_a_players_1m
+        team_b_players_1m
+        team_a_players_2m
+        team_b_players_2m
+        team_a_players_5m
+        team_b_players_5m
+    """
+    out = df.copy()
+
+    distance_suffix = params["distance_suffix"]
+    team_suffix = params["team_suffix"]
+
+    teams = {
+        "team_a": params["team_a"],
+        "team_b": params["team_b"],
+    }
+
+    radii = params["density_radii"]
+
+    # Identify player distance columns and their corresponding team columns
+    player_columns = {}
+
+    for column in out.columns:
+        if not column.endswith(distance_suffix):
+            continue
+
+        team_column = (
+            f"{column.removesuffix(distance_suffix)}{team_suffix}"
+        )
+
+        if team_column in out.columns:
+            player_columns[column] = team_column
+
+    if not player_columns:
+        raise ValueError(
+            "No valid player-ball distance columns found. "
+            "Cannot calculate player density."
+        )
+
+    if not radii or any(radius <= 0 for radius in radii):
+        raise ValueError("density_radii must contain positive values.")
+
+    # Calculate density for each team and radius
+    for team_key, team_name in teams.items():
+
+        team_distances = {}
+
+        for distance_column, team_column in player_columns.items():
+
+            team_distances[distance_column] = (
+                pd.to_numeric(
+                    out[distance_column], errors="coerce"
+                )
+                .where(out[team_column].eq(team_name))
+            )
+
+        team_distances_df = pd.DataFrame(
+            team_distances,
+            index=out.index
+        )
+
+        for radius in radii:
+
+            count = (
+                team_distances_df
+                .le(radius)
+                .fillna(False)
+                .sum(axis=1)
+            )
+
+            out[f"{team_key}_players_{radius:g}m"] = count
+
     return out
