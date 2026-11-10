@@ -5,16 +5,17 @@ A small [Kedro](https://kedro.org) pipeline that turns the raw tactical tracking
 ## Pipeline overview
 
 ```
-raw_tactical ──ingest──▶ ingested ──clean──▶ cleaned ──build_features──▶ features ──export──▶ final
- (CSV, input)                                   ▲                                        (CSV, output)
-                                  params:features + match_info
+raw_tactical ──ingest──▶ clean ──▶ ball, tag and team features ──▶ HMM ──export──▶ final
+ (CSV, input)                        ▲                                              (CSV, output)
+                            smart tags + parameters
 ```
 
 | Stage | File | Purpose |
 |-------|------|---------|
 | ingest | [stages/ingest.py](stages/ingest.py) | Typing and sorting of raw frames |
 | clean | [stages/clean.py](stages/clean.py) | Drop duplicates and empty columns |
-| features | [stages/features.py](stages/features.py) | Derive per-frame features |
+| features | [stages/ball_focused_features_extraction.py](stages/ball_focused_features_extraction.py), [stages/smart_tags.py](stages/smart_tags.py), [stages/team_focused_features_extraction.py](stages/team_focused_features_extraction.py) | Derive per-frame ball, tag and team features |
+| HMM | [stages/hmm_possession.py](stages/hmm_possession.py) | Fit a three-state HMM and add provisional possession estimates |
 | export | [stages/export.py](stages/export.py) | Final shaping of the output |
 
 Everything is wired together in [main.py](main.py).
@@ -30,9 +31,59 @@ python data-pipeline/main.py
 
 Output: `data-pipeline/output/tactical_processed.csv`.
 
+## HMM possession stage
+
+The stage trains one diagonal-Gaussian HMM across the available input frames and adds
+`hmm_possession`: `H` for Barcelona, `A` for Atletic Club, `D` for an estimated stoppage,
+and `X` for an observation on which the model abstains. These are **heuristic model outputs**,
+not corrected labels; in particular, a set-piece tag is a broad event window, not proof that
+the ball is dead. This column is not a submission: the pipeline only outputs input frames,
+and a submission must separately cover every video frame.
+
+The emissions use `log1p` of each team's nearest-player ball distance and each team's centroid
+speed, standardized on complete observations. Duplicated distance features, tracking-slot IDs,
+the mixed-unit team-ball relative positions and `ball_speed` are excluded. Although the
+dictionary describes `ball_speed` as metres per second, its current implementation calculates
+displacement from normalized coordinates without pitch scaling. The centroid speeds are based
+on metre coordinates. The first team-speed observation can be unreliable because the existing
+team feature stage treats missing velocity components as zero.
+
+For the supplied 7,501-frame sample, 971 frames (12.9%) lack both ball distances; among the
+6,530 frames with both distances, Team A is closer in 61.4% and both teams are over 10 m away
+in only 1.3%. In the overlapping public ground-truth window (7,415 sample frames), median
+centroid speeds for H, A and D were respectively approximately (1.36, 1.98), (2.05, 1.57) and
+(0.55, 0.54) m/s for Barcelona and Atletic Club. The ball was missing on 33.6% of D frames
+but also 15.0% of A frames, so missing tracking is not a dead-ball label. These public-window
+statistics informed feature choice, not parameter fitting; they are not independent validation.
+
+Initial H and A emission means are medians of the top and bottom 30% of the observed distance
+advantage outside set-piece windows. The D mean uses frames in set-piece windows with average
+centroid speed in the bottom 40%. These are weak anchors, not labels. Covariances start from
+the pooled standardized variance, and the initial diagonal transition probability is 0.997
+(roughly 13.3 seconds expected duration at 25 fps); EM can update all model parameters. After
+training, states are assigned H/A/D by the minimum total distance to those three initial means.
+The mapping can be wrong if learned clusters do not correspond to the anchors. Parameters,
+including minimum sample and anchor counts, are in `HMM_PARAMS` in [main.py](main.py); training
+fails explicitly if there is insufficient evidence, including when no suitable set-piece
+observations exist.
+
+Training breaks sequences at missing feature rows, skipped frame IDs and period boundaries.
+Decoding also resets at skipped frames and period boundaries, but bridges missing observations
+with neutral emission likelihoods, then reports `X` on those rows. This avoids treating an
+untracked ball as dead or falsely joining nonconsecutive frames. The model is fitted and decoded
+on the same input; the observed sample is not a held-out test. For that sample, its agreement
+with the 7,415 overlapping public labeled frames is about 47.5% when `X` counts as incorrect;
+do not interpret this as an estimate of out-of-sample performance.
+
+Run the stage tests with:
+
+```bash
+python -m unittest discover -s data-pipeline/tests -v
+```
+
 ## Output data dictionary
 
-The supplied `output/tactical_processed.csv` contains 261 columns. Repeated player fields are
+The supplied `output/tactical_processed.csv` contains 288 columns. Repeated player fields are
 documented by their naming pattern and the complete list of track slots below; for example,
 `2_x`, `2_y`, and `2_s` are the fields for track slot 2. Track-slot numbers are tracker IDs, not
 player identities. Positions without a `_m` suffix are normalised to the pitch (0–1); `_x_m`,
@@ -65,6 +116,7 @@ no observations.
 
 | Column | Definition |
 |--------|------------|
+| `hmm_possession` | Heuristic HMM state `H`, `A` or `D`, or `X` when one or more HMM input features are missing. |
 | `min_team_a_dist` | Distance in metres from the ball to the nearest tracked Team A player (`Barcelona`) in the frame. |
 | `min_team_b_dist` | Distance in metres from the ball to the nearest tracked Team B player (`Atletic Club`) in the frame. |
 | `nearest_player_dist` | Smaller of the two teams' nearest-player distances, in metres. |
@@ -72,18 +124,18 @@ no observations.
 | `possession_advantage` | `min_team_b_dist - min_team_a_dist` in metres; positive means Team A is closer, negative means Team B is closer. This is a distance comparison, not a possession label. |
 | `team_a_players_1m`, `team_a_players_2m`, `team_a_players_5m` | Number of Team A players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
 | `team_b_players_1m`, `team_b_players_2m`, `team_b_players_5m` | Number of Team B players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
-| `ball_dx`, `ball_dy` | Ball x and y displacement in metres since the preceding valid ball observation. |
-| `ball_displacement` | Euclidean ball displacement in metres between valid observations. |
-| `ball_speed` | Average ball speed in metres per second between valid observations, using elapsed frame time. |
-| `ball_acceleration` | Change in ball speed per second, in metres per second squared. |
-| `ball_direction_deg` | Ball movement direction in degrees relative to the positive x-axis (`atan2(ball_dy, ball_dx)`). |
+| `ball_dx`, `ball_dy` | Ball x and y displacement in normalized pitch coordinates since the preceding valid ball observation. |
+| `ball_displacement` | Euclidean displacement in normalized coordinates between valid observations; the two axes have different physical scales. |
+| `ball_speed` | Normalized-coordinate displacement per second between valid observations, using elapsed frame time; not metres per second. |
+| `ball_acceleration` | Change in normalized-coordinate speed per second, not metres per second squared. |
+| `ball_direction_deg` | Ball movement direction calculated from normalized coordinate differences (`atan2(ball_dy, ball_dx)`), not a physical pitch angle. |
 | `ball_direction_change_deg` | Signed angular change in direction from the preceding valid movement vector, in degrees (−180 to 180). |
 | `ball_direction_change_abs_deg` | Absolute angular change from the preceding valid movement vector, in degrees (0 to 180). |
 | `team_a_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team A player's ball distance, in metres per second; positive means approaching the ball. |
 | `team_b_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team B player's ball distance, in metres per second; positive means approaching the ball. |
 | `nearest_player_ball_relative_velocity` | Relative velocity for the nearest player on either team, in metres per second; positive means approaching the ball. |
 | `nearest_player_ball_relative_velocity_team` | Team of the nearest player used for `nearest_player_ball_relative_velocity`; ties go to Team A. |
-| `ball_velocity_x` | Horizontal component of ball velocity, in metres per second. |
+| `ball_velocity_x` | Horizontal component of ball velocity, in normalized pitch-length units per second. |
 | `ball_velocity_toward_team_a_goal` | Ball x velocity projected onto Team A's configured attacking direction; positive means toward that goal. |
 | `ball_velocity_toward_team_b_goal` | Ball x velocity projected onto Team B's configured attacking direction; positive means toward that goal. |
 | `ball_moving_toward_team_a_goal` | Whether the ball is moving toward Team A's configured goal (`True`/1); missing when velocity is unavailable. |
@@ -124,6 +176,20 @@ intervals, not ground-truth possession labels.
 | `team_centroid_x_atletic_club`, `team_centroid_y_atletic_club` | Atletic Club players' mean x and y coordinates in metres for the frame. |
 | `team_dispersion_barcelona` | Mean distance in metres of Barcelona players from Barcelona's frame centroid. |
 | `team_dispersion_atletic_club` | Mean distance in metres of Atletic Club players from Atletic Club's frame centroid. |
+| `team_centroid_velocity_x_<team>`, `team_centroid_velocity_y_<team>` | Team-centroid velocity components along the pitch x and y axes, in metres per second; `<team>` is `all_players`, `barcelona`, or `atletic_club`. |
+| `team_centroid_speed_<team>` | Magnitude of the team's centroid velocity, in metres per second; `<team>` is `all_players`, `barcelona`, or `atletic_club`. |
+| `team_average_radial_movement_<team>` | Mean player velocity projected toward the ball for the team, in metres per second. Positive means moving toward the ball; negative means moving away. |
+| `team_width_<team>`, `team_depth_<team>` | Team's player-coordinate span in metres: width is max y minus min y, and depth is max x minus min x. |
+| `team_tracked_players_<team>` | Number of players assigned to the team with valid x and y coordinates in the frame. |
+| `team_movement_coherence_<team>` | Mean-resultant-length measure of the team's moving-player directions, from 0 (directions cancel) to 1 (same direction). Stationary players are excluded. |
+| `team_movement_coherence_players_<team>` | Number of moving players with valid directions used to calculate the team's movement coherence. |
+| `opponent_team_centroid_distance` | Euclidean distance in metres between the two team centroids. |
+| `opponent_team_closing_speed` | Rate of change of the inter-centroid distance in metres per second; positive means the teams are approaching, negative means they are separating. |
+| `team_ball_longitudinal_distance_<team>`, `team_ball_lateral_distance_<team>` | Ball position relative to the team's centroid along the team's attacking x direction and the positive y direction, respectively. In the current output, normalized ball coordinates are subtracted from metre-based centroid coordinates, so these values have mixed units and must not be interpreted as physical distances. `<team>` is `barcelona` or `atletic_club`. |
+
+Team velocity, radial movement, and closing-speed features are based on successive valid
+observations at the configured 25 frames per second; their first observation in a period, or an
+interval without a prior valid observation, has no velocity value.
 
 ## Key concepts
 

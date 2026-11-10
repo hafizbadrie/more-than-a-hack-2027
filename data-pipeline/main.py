@@ -8,6 +8,7 @@ from kedro_datasets.pandas import CSVDataset
 from stages.ball_focused_features_extraction import *
 from stages.clean import clean
 from stages.export import export
+from stages.hmm_possession import add_hmm_possession
 from stages.ingest import ingest
 from stages.smart_tags import build_phase_flags, build_tag_features
 from stages.team_focused_features_extraction import *
@@ -39,6 +40,15 @@ TEAM_FOCUSED_PARAMS = {
     },
 }
 MATCH_INFO = {"match_id": "BAR-ATH", "home_team": "BAR", "away_team": "ATH"}
+HMM_PARAMS = {
+    "self_transition": 0.997,
+    "n_iter": 100,
+    "tol": 0.01,
+    "min_covar": 0.01,
+    "random_state": 0,
+    "min_samples": 100,
+    "min_anchor_samples": 10,
+}
 
 
 def build_pipeline():
@@ -215,10 +225,16 @@ def build_pipeline():
                 "with_team_position_relative_to_ball",
                 name="team_position_relative_to_ball",
             ),
+            node(
+                add_hmm_possession,
+                ["with_team_position_relative_to_ball", "params:hmm"],
+                "with_hmm_possession",
+                name="hmm_possession",
+            ),
             # Export final processed dataset
             node(
                 export,
-                "with_team_position_relative_to_ball",
+                "with_hmm_possession",
                 "final",
                 name="export",
             ),
@@ -255,6 +271,7 @@ def build_catalog():
             "with_team_movement_coherence": MemoryDataset(),
             "with_opponent_team_proximity": MemoryDataset(),
             "with_team_position_relative_to_ball": MemoryDataset(),
+            "with_hmm_possession": MemoryDataset(),
             "final": CSVDataset(
                 filepath=str(ROOT / "output/tactical_processed.csv"),
                 save_args={"index": False},
@@ -266,6 +283,7 @@ def build_catalog():
             "params:team_focused_features": MemoryDataset(
                 TEAM_FOCUSED_PARAMS
             ),
+            "params:hmm": MemoryDataset(HMM_PARAMS),
             "match_info": MemoryDataset(MATCH_INFO),
         }
     )
