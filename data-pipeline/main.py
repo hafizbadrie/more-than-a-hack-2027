@@ -13,9 +13,9 @@ from stages.ball_focused_approach_features_extraction import (
     extract_possession_advantage)
 from stages.clean import clean
 from stages.export import export
-from stages.features import build_features
 from stages.ingest import ingest
 from stages.smart_tags import build_phase_flags, build_tag_features
+from stages.team_focused_features_extraction import *
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
@@ -52,19 +52,10 @@ def build_pipeline():
                 "cleaned",
                 name="clean",
             ),
-            # One stage, several inputs: "cleaned" comes from a MemoryDataset
-            # (output of the previous stage), "params:features" and "match_info"
-            # come from plain dicts (MemoryDataset / direct dict assignment).
-            node(
-                build_features,
-                ["cleaned", "params:features", "match_info"],
-                "features",
-                name="features",
-            ),
             # Feature 1: Nearest player-ball distance
             node(
                 extract_nearest_player_ball_distance,
-                ["features", "params:feature_extraction_dani"],
+                ["features_hbl", "params:feature_extraction_dani"],
                 "features_nearest_player_ball_distance",
                 name="nearest_player_ball_distance",
             ),
@@ -157,10 +148,22 @@ def build_pipeline():
                 "features_phased", 
                 name="phase_flags"
             ),
+            node(
+                team_centroids,
+                "features_phased",
+                "with_team_centroids",
+                name="hbl_features",
+            ),
+            node(
+                team_dispersion,
+                "with_team_centroids",
+                "with_team_dispersion",
+                name="team_dispersion",
+            ),
             # Export final processed dataset
             node(
                 export,
-                "features_phased",
+                "with_team_dispersion",
                 "final",
                 name="export",
             ),
@@ -180,7 +183,6 @@ def build_catalog():
             ),
             "ingested": MemoryDataset(),
             "cleaned": MemoryDataset(),
-            "features": MemoryDataset(),
             "features_nearest_player_ball_distance": MemoryDataset(),
             "features_possession_advantage": MemoryDataset(),
             "features_player_density": MemoryDataset(),
@@ -190,6 +192,8 @@ def build_catalog():
             "features_relative_velocity": MemoryDataset(),
             "features_ball_trajectory": MemoryDataset(),
             "features_tagged": MemoryDataset(),
+            "with_team_centroids": MemoryDataset(),
+            "with_team_dispersion": MemoryDataset(),
             "final": CSVDataset(
                 filepath=str(ROOT / "output/tactical_processed.csv"),
                 save_args={"index": False},
