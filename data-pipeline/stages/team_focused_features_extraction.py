@@ -75,9 +75,9 @@ def team_centroids(feature_phased: pd.DataFrame) -> pd.DataFrame:
 			)
 			.reset_index()
 		)
-		with_team_centroids = df.merge(team_centroids, on=frame_cols, how="left")
+		df = df.merge(team_centroids, on=frame_cols, how="left")
 
-	return with_team_centroids
+	return df
 
 def team_dispersion(with_team_centroids: pd.DataFrame) -> pd.DataFrame:
 	# Feature set 2: Team dispersion. It's defined as the average distance for each player from the team centroid.
@@ -105,5 +105,5 @@ def team_dispersion(with_team_centroids: pd.DataFrame) -> pd.DataFrame:
 			.mean()
 			.reset_index()
 		)
-		with_team_dispersion = df.merge(team_dispersion, on=frame_cols, how="left")
-	return with_team_dispersion
+		df = df.merge(team_dispersion, on=frame_cols, how="left")
+	return df

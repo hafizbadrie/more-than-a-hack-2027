@@ -55,7 +55,7 @@ def build_pipeline():
             # Feature 1: Nearest player-ball distance
             node(
                 extract_nearest_player_ball_distance,
-                ["features_hbl", "params:feature_extraction_dani"],
+                ["cleaned", "params:feature_extraction_dani"],
                 "features_nearest_player_ball_distance",
                 name="nearest_player_ball_distance",
             ),
