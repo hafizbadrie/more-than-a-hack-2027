@@ -30,6 +30,101 @@ python data-pipeline/main.py
 
 Output: `data-pipeline/output/tactical_processed.csv`.
 
+## Output data dictionary
+
+The supplied `output/tactical_processed.csv` contains 261 columns. Repeated player fields are
+documented by their naming pattern and the complete list of track slots below; for example,
+`2_x`, `2_y`, and `2_s` are the fields for track slot 2. Track-slot numbers are tracker IDs, not
+player identities. Positions without a `_m` suffix are normalised to the pitch (0–1); `_x_m`,
+`_y_m`, and distance fields are in metres. Missing tracking values remain empty/NaN. The clean
+stage removes columns that are entirely empty, so a regenerated output can omit columns that have
+no observations.
+
+### Frame and raw tracking columns
+
+| Columns | Definition |
+|---------|------------|
+| `period_id` | Period/half identifier from the tactical tracking data. |
+| `timestamp` | Time of the frame, parsed as a pandas duration. |
+| `frame_id` | Tactical video frame number; nominal frame rate is 25 frames per second. |
+| `ball_x`, `ball_y` | Ball pitch coordinates on the normalised 0–1 x and y axes. |
+| For each slot `2, 3, 4, 6, 9, 11, 12, 13, 15, 16, 17, 18, 21, 24, 26, 29, 30, 31, 32, 33, 34, 35, 37, 41, 43, 45, 46`: `<slot>_x` | Tracked object's x position, normalised to the pitch (0–1). |
+| Same slots as `<slot>_x`: `<slot>_y` | Tracked object's y position, normalised to the pitch (0–1). |
+| Same slots as `<slot>_x`: `<slot>_s` | Tracked object's speed in metres per second. |
+
+### Player-slot enrichment columns
+
+| Columns | Definition |
+|---------|------------|
+| `1_team` through `46_team` (one column per integer slot) | Team assigned to that tracking slot (in this match, `Barcelona` or `Atletic Club`); empty when unavailable. The slot is not a persistent player identity. |
+| For each slot `2, 3, 4, 6, 9, 11, 12, 13, 15, 16, 17, 18, 21, 24, 26, 29, 30, 31, 32, 33, 34, 35, 37, 41, 43, 45, 46`: `<slot>_x_m` | Slot's x position converted from normalised pitch coordinates to metres using the 105.3 m pitch length. |
+| Same slots as `<slot>_x_m`: `<slot>_y_m` | Slot's y position converted from normalised pitch coordinates to metres using the 68.0 m pitch width. |
+| For each slot `2, 3, 4, 6, 9, 11, 12, 15, 16, 17, 18, 21, 24, 26, 29, 30, 31, 32, 33, 34, 35, 37, 41, 43, 45, 46`: `<slot>_ball_dist_m` | Euclidean distance in metres from the tracked slot to the ball. This output has no distance column for slot 13. |
+
+### Ball, proximity, and motion features
+
+| Column | Definition |
+|--------|------------|
+| `min_team_a_dist` | Distance in metres from the ball to the nearest tracked Team A player (`Barcelona`) in the frame. |
+| `min_team_b_dist` | Distance in metres from the ball to the nearest tracked Team B player (`Atletic Club`) in the frame. |
+| `nearest_player_dist` | Smaller of the two teams' nearest-player distances, in metres. |
+| `nearest_player_team` | Team of the closest player; ties are assigned to Team A. |
+| `possession_advantage` | `min_team_b_dist - min_team_a_dist` in metres; positive means Team A is closer, negative means Team B is closer. This is a distance comparison, not a possession label. |
+| `team_a_players_1m`, `team_a_players_2m`, `team_a_players_5m` | Number of Team A players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
+| `team_b_players_1m`, `team_b_players_2m`, `team_b_players_5m` | Number of Team B players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
+| `ball_dx`, `ball_dy` | Ball x and y displacement in metres since the preceding valid ball observation. |
+| `ball_displacement` | Euclidean ball displacement in metres between valid observations. |
+| `ball_speed` | Average ball speed in metres per second between valid observations, using elapsed frame time. |
+| `ball_acceleration` | Change in ball speed per second, in metres per second squared. |
+| `ball_direction_deg` | Ball movement direction in degrees relative to the positive x-axis (`atan2(ball_dy, ball_dx)`). |
+| `ball_direction_change_deg` | Signed angular change in direction from the preceding valid movement vector, in degrees (−180 to 180). |
+| `ball_direction_change_abs_deg` | Absolute angular change from the preceding valid movement vector, in degrees (0 to 180). |
+| `team_a_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team A player's ball distance, in metres per second; positive means approaching the ball. |
+| `team_b_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team B player's ball distance, in metres per second; positive means approaching the ball. |
+| `nearest_player_ball_relative_velocity` | Relative velocity for the nearest player on either team, in metres per second; positive means approaching the ball. |
+| `nearest_player_ball_relative_velocity_team` | Team of the nearest player used for `nearest_player_ball_relative_velocity`; ties go to Team A. |
+| `ball_velocity_x` | Horizontal component of ball velocity, in metres per second. |
+| `ball_velocity_toward_team_a_goal` | Ball x velocity projected onto Team A's configured attacking direction; positive means toward that goal. |
+| `ball_velocity_toward_team_b_goal` | Ball x velocity projected onto Team B's configured attacking direction; positive means toward that goal. |
+| `ball_moving_toward_team_a_goal` | Whether the ball is moving toward Team A's configured goal (`True`/1); missing when velocity is unavailable. |
+| `ball_moving_toward_team_b_goal` | Whether the ball is moving toward Team B's configured goal (`True`/1); missing when velocity is unavailable. |
+
+Ball motion features use available valid observations only; missing coordinates are not interpolated.
+The first observation or motion interval without a previous valid observation has undefined (NaN)
+motion values.
+
+### Smart-tag and match-phase columns
+
+Signed team values use `+1` for the home team (Barcelona), `−1` for the away team (Atletic Club),
+and `0` for no recognised team or no signed tag, as applicable. Smart tags are automatic event
+intervals, not ground-truth possession labels.
+
+| Column | Definition |
+|--------|------------|
+| `tag_att_signed` | Signed active attacking-tag code(s), summed and clipped to −1, 0, or +1. Overlapping opposing tags can cancel to 0. |
+| `tag_att_trans_signed` | Signed active Attacking Transition tag, with the same home/away convention. |
+| `tag_def_signed` | Signed active defending/Defensive Transition tag(s), summed and clipped to −1, 0, or +1. The source does not establish whether the tag's team is the defender or possessor. |
+| `tag_n_active` | Number of Smart Tagging intervals active in the frame, including unrecognised tag codes. |
+| `tag_box_players` | Maximum active-tag “Max Players in the box” value for the frame (`7+` is represented as 7); 0 when none is provided. |
+| `sp_kind` | Active set-piece type: `throw_in`, `corner_kick`, `goal_kick`, `free_kick`, `kick_off_start`, or `kick_off_after_goal`; missing when no recognised set piece is active. |
+| `sp_team` | Signed team restarting from the active set-piece tag; 0 when the team is unknown/not applicable. |
+| `sp_since` | Seconds since the active set-piece tagging interval began; missing outside such an interval. |
+| `evt_t_to_restart` | Seconds until the confirmed restart (negative before, zero at, positive after); missing when a restart time could not be confirmed. |
+| `home_attacking` | 1 when an attacking Smart Tag interval assigned to the home team covers this frame; otherwise 0. |
+| `home_defending` | 1 when a defending Smart Tag interval assigned to the home team covers this frame; otherwise 0. |
+| `away_attacking` | 1 when an attacking Smart Tag interval assigned to the away team covers this frame; otherwise 0. |
+| `away_defending` | 1 when a defending Smart Tag interval assigned to the away team covers this frame; otherwise 0. |
+
+### Team shape columns
+
+| Column | Definition |
+|--------|------------|
+| `team_centroid_x_all_players`, `team_centroid_y_all_players` | Mean x and y coordinates in metres of all tracked players with valid converted coordinates in the frame. |
+| `team_centroid_x_barcelona`, `team_centroid_y_barcelona` | Barcelona players' mean x and y coordinates in metres for the frame. |
+| `team_centroid_x_atletic_club`, `team_centroid_y_atletic_club` | Atletic Club players' mean x and y coordinates in metres for the frame. |
+| `team_dispersion_barcelona` | Mean distance in metres of Barcelona players from Barcelona's frame centroid. |
+| `team_dispersion_atletic_club` | Mean distance in metres of Atletic Club players from Atletic Club's frame centroid. |
+
 ## Key concepts
 
 - **Node** – a plain Python function plus its input and output dataset names.
