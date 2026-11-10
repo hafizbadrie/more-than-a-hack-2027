@@ -5,21 +5,17 @@ from kedro.io import DataCatalog, MemoryDataset
 from kedro.pipeline import node, pipeline
 from kedro.runner import SequentialRunner
 from kedro_datasets.pandas import CSVDataset
+from stages.ball_focused_approach_features_extraction import (
+    extract_ball_acceleration, extract_ball_direction_change,
+    extract_ball_speed, extract_ball_trajectory_toward_goal,
+    extract_nearest_player_ball_distance,
+    extract_nearest_player_ball_relative_velocity, extract_player_density,
+    extract_possession_advantage)
 from stages.clean import clean
 from stages.export import export
-from stages.ball_focused_approach_features_extraction import (
-    extract_nearest_player_ball_distance,
-    extract_possession_advantage, 
-    extract_player_density,
-    extract_ball_speed,
-    extract_ball_acceleration,
-    extract_ball_direction_change,
-    extract_nearest_player_ball_relative_velocity,
-    extract_ball_trajectory_toward_goal,
-)
 from stages.features import build_features
 from stages.ingest import ingest
-from stages.smart_tags import build_tag_features
+from stages.smart_tags import build_phase_flags, build_tag_features
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
@@ -151,10 +147,20 @@ def build_pipeline():
                 "features_tagged",
                 name="tag_features",
             ),
+            node(build_phase_flags, 
+                [
+                    "features_tagged", 
+                    "raw_smart_tag", 
+                    "params:features", 
+                    "match_info"
+                ],
+                "features_phased", 
+                name="phase_flags"
+            ),
             # Export final processed dataset
             node(
                 export,
-                "features_tagged",
+                "features_phased",
                 "final",
                 name="export",
             ),

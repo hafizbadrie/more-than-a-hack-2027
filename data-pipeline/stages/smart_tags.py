@@ -310,3 +310,84 @@ def build_tag_features(df: pd.DataFrame, smart_tag: pd.DataFrame, params: dict,
     for col in OUT_COLUMNS:
         out[col] = table[col].iloc[frames].array          # positional: the index of df is irrelevant
     return out
+
+
+def extract_tag_columns(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """Only the frame key and the 9 tag columns, for saving on their own.
+
+    Takes the output of build_tag_features and keeps the same frame column it joined on, so the
+    file can be merged back onto any per-frame table by that key.
+    """
+    _, frame_col = _video_frames(df, params)
+    missing = [c for c in OUT_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError("tag columns %s not found; run build_tag_features first" % missing)
+    return df[[frame_col] + OUT_COLUMNS].reset_index(drop=True)
+
+
+# --- four per-frame phase flags: home/away x attacking/defending -------------------------------
+PHASE_COLUMNS = ["home_attacking", "home_defending", "away_attacking", "away_defending"]
+PHASE_ATTACKING = {"build_up", "progression", "long_ball", "creating_chances", "ball_in_final_third",
+                   "ball_in_the_box", "goals", "attacking_transition"}
+PHASE_DEFENDING = {"defensive_transition", "defending_in_defensive_third",
+                   "defending_in_middle_third", "defending_in_attacking_third"}
+
+
+def build_phase_flags(df: pd.DataFrame, smart_tag: pd.DataFrame, params: dict,
+                      match_info: dict) -> pd.DataFrame:
+    """Add home_attacking, home_defending, away_attacking, away_defending (0/1, int8) to df.
+
+    A flag is 1 on a frame when at least one tag of that phase and that team covers the frame
+    (overlapping tags of the same team just count once). Frames outside every tag are 0.
+
+    Same inputs as build_tag_features (frame column, smart_tag CSV, match_info for the team names).
+    Optional params:
+      attacking_codes / defending_codes   sets of code keys (lower case, underscores) replacing
+                                          PHASE_ATTACKING / PHASE_DEFENDING. PLAYERS IN THE BOX is
+                                          not in the default attacking set; add "players_in_the_box"
+                                          to include it.
+      defending_team_means                "defender" (default: Team on a Defending tag is the team
+                                          that defends) or "possessor" (Team is the team with the
+                                          ball, so the flag goes to the other team). Check this with
+                                          smart_tags_hypothesis.py before trusting the defending flags.
+    Tags without a recognisable team (N/A, empty) set no flag; the number skipped is logged.
+    """
+    attacking = {_code_key(c) for c in params.get("attacking_codes", PHASE_ATTACKING)}
+    defending = {_code_key(c) for c in params.get("defending_codes", PHASE_DEFENDING)}
+    means = params.get("defending_team_means", "defender")
+    if means not in ("defender", "possessor"):
+        raise ValueError("params['defending_team_means'] must be 'defender' or 'possessor', got %r" % means)
+
+    frames, frame_col = _video_frames(df, params)
+    n_frames = int(frames.max()) + 1
+    sign_of = _make_signer(params, match_info)
+    # difference arrays: +1 at start, -1 at end (end exclusive); positive running sum = flag on
+    diff = {c: np.zeros(n_frames + 1, np.int32) for c in PHASE_COLUMNS}
+    no_team = 0
+    for ev in _load_events(smart_tag):
+        key = _code_key(ev["code"])
+        phase = "attacking" if key in attacking else "defending" if key in defending else None
+        if phase is None:
+            continue
+        sign = sign_of(_tag(ev, "Team"))
+        if sign == 0:
+            no_team += 1
+            continue
+        if phase == "defending" and means == "possessor":
+            sign = -sign
+        a, b = max(ev["start_frame"], 0), min(ev["end_frame"], n_frames)
+        if b <= a:
+            continue
+        col = ("home_" if sign > 0 else "away_") + phase
+        diff[col][a] += 1
+        diff[col][b] -= 1
+    if no_team:
+        log.warning("phase_flags: %d attacking/defending tag(s) without a recognisable team ignored", no_team)
+
+    out = df.copy()
+    for col in PHASE_COLUMNS:
+        on = (np.cumsum(diff[col][:n_frames]) > 0).astype(np.int8)
+        out[col] = on[frames]
+    log.info("phase_flags: frame column %r, flagged frames: %s", frame_col,
+             {c: int(out[c].sum()) for c in PHASE_COLUMNS})
+    return out
