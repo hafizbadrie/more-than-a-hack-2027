@@ -20,6 +20,10 @@ raw_tactical ──ingest──▶ clean ──▶ ball, tag and team features �
 
 Everything is wired together in [main.py](main.py).
 
+The ingest stage exposes `video_frame` as a zero-based column. For the existing tactical CSV,
+it converts the one-based source frame counter to `video_frame`; inputs already using
+`video_frame` are left unchanged.
+
 ## Setup and run
 
 From the repository root:
@@ -40,13 +44,15 @@ not corrected labels; in particular, a set-piece tag is a broad event window, no
 the ball is dead. This column is not a submission: the pipeline only outputs input frames,
 and a submission must separately cover every video frame.
 
-The emissions use `log1p` of each team's nearest-player ball distance and each team's centroid
-speed, standardized on complete observations. Duplicated distance features, tracking-slot IDs,
-the mixed-unit team-ball relative positions and `ball_speed` are excluded. Although the
-dictionary describes `ball_speed` as metres per second, its current implementation calculates
-displacement from normalized coordinates without pitch scaling. The centroid speeds are based
-on metre coordinates. The first team-speed observation can be unreliable because the existing
-team feature stage treats missing velocity components as zero.
+The emissions use all numeric features produced by the ball, tag, phase and team stages;
+categorical team and set-piece-type columns are excluded. Signed values use a signed `log1p`
+transform before standardization. Missing values are mean-imputed for EM training and
+marginalized during decoding; the model abstains with `X` only when every model feature is
+missing for a frame. Although the dictionary describes `ball_speed` as metres per second, its
+current implementation calculates displacement from normalized coordinates without pitch
+scaling. The centroid speeds are based on metre coordinates. The first team-speed observation
+can be unreliable because the existing team feature stage treats missing velocity components
+as zero.
 
 For the supplied 7,501-frame sample, 971 frames (12.9%) lack both ball distances; among the
 6,530 frames with both distances, Team A is closer in 61.4% and both teams are over 10 m away
@@ -67,13 +73,13 @@ including minimum sample and anchor counts, are in `HMM_PARAMS` in [main.py](mai
 fails explicitly if there is insufficient evidence, including when no suitable set-piece
 observations exist.
 
-Training breaks sequences at missing feature rows, skipped frame IDs and period boundaries.
-Decoding also resets at skipped frames and period boundaries, but bridges missing observations
-with neutral emission likelihoods, then reports `X` on those rows. This avoids treating an
-untracked ball as dead or falsely joining nonconsecutive frames. The model is fitted and decoded
-on the same input; the observed sample is not a held-out test. For that sample, its agreement
-with the 7,415 overlapping public labeled frames is about 47.5% when `X` counts as incorrect;
-do not interpret this as an estimate of out-of-sample performance.
+Training breaks sequences at frames with no observed model features, skipped frame IDs and
+period boundaries. Decoding also resets at skipped frames and period boundaries, but marginalizes
+missing feature dimensions and reports `X` only for frames with no observed model features. This
+avoids treating an untracked ball as dead or falsely joining nonconsecutive frames. The model is
+fitted and decoded on the same input; the observed sample is not a held-out test. For that sample,
+its agreement with the 7,415 overlapping public labeled frames is about 47.5% when `X` counts as
+incorrect; do not interpret this as an estimate of out-of-sample performance.
 
 Run the stage tests with:
 
@@ -97,7 +103,7 @@ no observations.
 |---------|------------|
 | `period_id` | Period/half identifier from the tactical tracking data. |
 | `timestamp` | Time of the frame, parsed as a pandas duration. |
-| `frame_id` | Tactical video frame number; nominal frame rate is 25 frames per second. |
+| `video_frame` | Tactical video frame number; nominal frame rate is 25 frames per second. |
 | `ball_x`, `ball_y` | Ball pitch coordinates on the normalised 0–1 x and y axes. |
 | For each slot `2, 3, 4, 6, 9, 11, 12, 13, 15, 16, 17, 18, 21, 24, 26, 29, 30, 31, 32, 33, 34, 35, 37, 41, 43, 45, 46`: `<slot>_x` | Tracked object's x position, normalised to the pitch (0–1). |
 | Same slots as `<slot>_x`: `<slot>_y` | Tracked object's y position, normalised to the pitch (0–1). |
@@ -116,7 +122,7 @@ no observations.
 
 | Column | Definition |
 |--------|------------|
-| `hmm_possession` | Heuristic HMM state `H`, `A` or `D`, or `X` when one or more HMM input features are missing. |
+| `hmm_possession` | Heuristic HMM state `H`, `A` or `D`, or `X` when all HMM input features are missing. |
 | `min_team_a_dist` | Distance in metres from the ball to the nearest tracked Team A player (`Barcelona`) in the frame. |
 | `min_team_b_dist` | Distance in metres from the ball to the nearest tracked Team B player (`Atletic Club`) in the frame. |
 | `nearest_player_dist` | Smaller of the two teams' nearest-player distances, in metres. |

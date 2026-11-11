@@ -32,7 +32,7 @@ If the server is already running, skip the command. Then open
 
 Enter a frame ID (1 to 199319) and click **Go**. The video pauses on that frame. An unknown ID shows "Frame ID does not exist!".
 
-Frame IDs are 1-based and match the ATD data: `video_frame = frame_id - 1` at 25 fps.
+Raw ATD records are 1-based; the app uses zero-based `video_frame` values at 25 fps.
 
 ## Notes
 

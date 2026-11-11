@@ -14,8 +14,8 @@ Inputs
              start_frame / end_frame are video frames (seconds * 25 from the first frame of the
              tactical video), end_frame being the first frame AFTER the interval.
   params     optional keys (all have defaults):
-               frame_col        column holding the frame number. Default: first of frame_id, frame,
-                                video_frame found in df.
+               frame_col        column holding the frame number. Default precedence:
+                                video_frame, frame_id, then frame.
                frame_offset     added to that column to get the VIDEO frame. Default: -1 for
                                 frame_id (ATD frame ids count from 1), 0 otherwise.
                fps              default 25
@@ -69,7 +69,7 @@ SP_KINDS = {"throw-in": "throw_in", "corner kick": "corner_kick", "goal kick": "
 SP_CATEGORIES = list(SP_KINDS.values())
 
 TAG_COLUMNS = ["Team", "Type", "Half", "Max Players in the box"]
-FRAME_COLUMNS = ["frame_id", "frame", "video_frame"]
+FRAME_COLUMNS = ["video_frame", "frame_id", "frame"]
 DEFAULT_ALIASES = {"barcelona": 1, "barça": 1, "barca": 1, "athletic": -1, "atletic": -1}
 DEFAULT_KICKOFFS = {"1st Half": 11185, "2nd Half": 113742}
 CENTRE_RADIUS_M = 1.0      # ball counts as "on the centre spot" within this distance
@@ -263,7 +263,7 @@ def _video_frames(df, params):
     col = params.get("frame_col") or next((c for c in FRAME_COLUMNS if c in df.columns), None)
     if col is None or col not in df.columns:
         raise ValueError("no frame column: looked for %s in %s. Set params['frame_col'] "
-                         "(and params['frame_offset'] if it is not the ATD frame_id)."
+                         "(and params['frame_offset'] if it is not the ATD video_frame)."
                          % (FRAME_COLUMNS, list(df.columns)))
     offset = params.get("frame_offset", -1 if col == "frame_id" else 0)
     frames = pd.to_numeric(df[col], errors="coerce")

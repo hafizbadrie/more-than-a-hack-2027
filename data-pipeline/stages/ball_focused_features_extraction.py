@@ -11,7 +11,7 @@ PARAMS = {
     "density_radii": [1.0, 2.0, 5.0],
 
     # Feature 4: Ball speed
-    "frame_col": "frame_id",
+    "frame_col": "video_frame",
     "ball_x_col": "ball_x",
     "ball_y_col": "ball_y",
     "fps": 25,
@@ -276,6 +276,12 @@ def extract_ball_speed(
             "ball_speed",
         ]
     ]
+
+    # Drop pre-existing feature columns (e.g. already present in the raw
+    # data) so the merge doesn't create _x/_y suffixed duplicates.
+    out = out.drop(
+        columns=[c for c in result.columns if c != frame_col and c in out.columns]
+    )
 
     # Merge extracted features back into the original dataframe.
     # Missing ball observations retain NaN values.

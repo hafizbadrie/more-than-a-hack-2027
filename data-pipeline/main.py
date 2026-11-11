@@ -7,7 +7,7 @@ from kedro.runner import SequentialRunner
 from kedro_datasets.pandas import CSVDataset
 from stages.ball_focused_features_extraction import *
 from stages.clean import clean
-from stages.export import export
+from stages.export import export, export_evaluation
 from stages.hmm_possession import add_hmm_possession
 from stages.ingest import ingest
 from stages.smart_tags import build_phase_flags, build_tag_features
@@ -23,7 +23,7 @@ BALL_FOCUSED_PARAMS = {
     "distance_suffix": "_ball_dist_m",
     "team_suffix": "_team",
     "density_radii": [1.0, 2.0, 5.0],
-    "frame_col": "frame_id",
+    "frame_col": "video_frame",
     "ball_x_col": "ball_x",
     "ball_y_col": "ball_y",
     "fps": 25,
@@ -238,6 +238,12 @@ def build_pipeline():
                 "final",
                 name="export",
             ),
+            node(
+                export_evaluation,
+                "with_hmm_possession",
+                "final_evaluation",
+                name="export_evaluation",
+            ),
         ]
     )
 
@@ -247,10 +253,12 @@ def build_catalog():
     catalog = DataCatalog(
         {
             "raw_tactical": CSVDataset(
-                filepath=str(REPO / "data/tactical/BAR-ATH_tactical_sample.csv")
+                # filepath=str(REPO / "data/tactical/BAR-ATH_tactical_sample.csv")
+                filepath=str(REPO / "data/tactical/BAR-ATH_tactical_ds.csv")
             ),
             "raw_smart_tag": CSVDataset(
-                filepath=str(REPO / "data/tactical/BAR-ATH_tactical_smart_tagging_sample.csv")
+                # filepath=str(REPO / "data/tactical/BAR-ATH_tactical_smart_tagging_sample.csv")
+                filepath=str(REPO / "data/tactical/BAR-ATH_smart_tagging_ds.csv")
             ),
             "ingested": MemoryDataset(),
             "cleaned": MemoryDataset(),
@@ -273,7 +281,12 @@ def build_catalog():
             "with_team_position_relative_to_ball": MemoryDataset(),
             "with_hmm_possession": MemoryDataset(),
             "final": CSVDataset(
+                # filepath=str(ROOT / "output/tactical_processed_sample.csv"),
                 filepath=str(ROOT / "output/tactical_processed.csv"),
+                save_args={"index": False},
+            ),
+            "final_evaluation": CSVDataset(
+                filepath=str(ROOT / "output/results.csv"),
                 save_args={"index": False},
             ),
             "params:features": MemoryDataset(PARAMS),

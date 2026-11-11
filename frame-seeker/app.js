@@ -110,7 +110,7 @@ function renderTracking(frameId) {
 
   const cells = line.split(',');
   const col = Object.fromEntries(dsHeader.map((name, i) => [name, cells[i]]));
-  const info = ['period_id', 'timestamp', 'frame_id', 'ball_x', 'ball_y', 'ball_speed'];
+  const info = ['period_id', 'timestamp', 'video_frame', 'ball_x', 'ball_y', 'ball_speed'];
   trackingTable.append(makeTable(info, [info.map((k) => fmt(col[k]))]));
 
   const rows = [];

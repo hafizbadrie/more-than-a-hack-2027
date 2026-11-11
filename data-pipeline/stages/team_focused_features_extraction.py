@@ -11,9 +11,9 @@ def _clean_team_name(team) -> str:
 
 def _build_player_data(features_hbl: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 	"""Build a long-form table of player coordinates and their teams."""
-	frame_cols = ["period_id", "frame_id"] if "period_id" in features_hbl else ["frame_id"]
-	if "frame_id" not in features_hbl:
-		raise ValueError("Cannot calculate team features without a 'frame_id' column.")
+	frame_cols = ["period_id", "video_frame"] if "period_id" in features_hbl else ["video_frame"]
+	if "video_frame" not in features_hbl:
+		raise ValueError("Cannot calculate team features without a 'video_frame' column.")
 
 	player_ids = [
 		column[:-4]
@@ -140,9 +140,9 @@ def team_centroid_velocity(
 
     df = with_team_centroids.copy()
 
-    if "frame_id" not in df.columns:
+    if "video_frame" not in df.columns:
         raise ValueError(
-            "Cannot calculate team centroid velocity without a 'frame_id' column."
+            "Cannot calculate team centroid velocity without a 'video_frame' column."
         )
 
     teams = [
@@ -160,9 +160,9 @@ def team_centroid_velocity(
 
     # Use period_id as part of the grouping when available.
     frame_cols = (
-        ["period_id", "frame_id"]
+        ["period_id", "video_frame"]
         if "period_id" in df.columns
-        else ["frame_id"]
+        else ["video_frame"]
     )
 
     for team_name in teams:
@@ -196,7 +196,7 @@ def team_centroid_velocity(
         for period, group in grouped:
             group = group.copy()
 
-            elapsed_time = group["frame_id"].diff() / fps
+            elapsed_time = group["video_frame"].diff() / fps
 
             group[f"team_centroid_velocity_x_{team_name}"] = (
                 group[x_col].diff() / elapsed_time
@@ -264,7 +264,7 @@ def team_average_radial_movement(
 
     Args:
         features: DataFrame containing player coordinates, team labels,
-                  ball coordinates, and frame_id.
+                  ball coordinates, and video_frame.
         fps: Tracking frequency in frames per second.
         ball_x_col: Ball X-coordinate column.
         ball_y_col: Ball Y-coordinate column.
@@ -278,7 +278,7 @@ def team_average_radial_movement(
 
     df = features.copy()
 
-    required_columns = ["frame_id", ball_x_col, ball_y_col]
+    required_columns = ["video_frame", ball_x_col, ball_y_col]
     missing_columns = [
         column for column in required_columns
         if column not in df.columns
@@ -306,9 +306,9 @@ def team_average_radial_movement(
         )
 
     frame_cols = (
-        ["period_id", "frame_id"]
+        ["period_id", "video_frame"]
         if "period_id" in df.columns
-        else ["frame_id"]
+        else ["video_frame"]
     )
 
     # Build long-form player tracking data.
@@ -343,10 +343,10 @@ def team_average_radial_movement(
 
     valid_positions["previous_x"] = grouped["x"].shift(1)
     valid_positions["previous_y"] = grouped["y"].shift(1)
-    valid_positions["previous_frame"] = grouped["frame_id"].shift(1)
+    valid_positions["previous_frame"] = grouped["video_frame"].shift(1)
 
     elapsed_time = (
-        valid_positions["frame_id"] - valid_positions["previous_frame"]
+        valid_positions["video_frame"] - valid_positions["previous_frame"]
     ) / fps
 
     valid_positions["player_vx"] = (
@@ -487,17 +487,17 @@ def team_movement_coherence(
     )
 
     player_data = player_data.sort_values(
-        grouping_cols + ["frame_id"]
+        grouping_cols + ["video_frame"]
     ).copy()
 
     grouped = player_data.groupby(grouping_cols, sort=False)
 
     player_data["previous_x"] = grouped["x"].shift(1)
     player_data["previous_y"] = grouped["y"].shift(1)
-    player_data["previous_frame"] = grouped["frame_id"].shift(1)
+    player_data["previous_frame"] = grouped["video_frame"].shift(1)
 
     elapsed_time = (
-        player_data["frame_id"] - player_data["previous_frame"]
+        player_data["video_frame"] - player_data["previous_frame"]
     ) / fps
 
     player_data["vx"] = (
@@ -628,12 +628,12 @@ def opponent_team_proximity(
 
     if grouping_cols:
         grouped = proximity.groupby(grouping_cols, sort=False)
-        elapsed_time = grouped["frame_id"].diff() / fps
+        elapsed_time = grouped["video_frame"].diff() / fps
         distance_change = grouped[
             "opponent_team_centroid_distance"
         ].diff()
     else:
-        elapsed_time = proximity["frame_id"].diff() / fps
+        elapsed_time = proximity["video_frame"].diff() / fps
         distance_change = proximity[
             "opponent_team_centroid_distance"
         ].diff()
@@ -691,7 +691,7 @@ def team_position_relative_to_ball(
     """
     df = features.copy()
 
-    required_columns = ["frame_id", ball_x_col, ball_y_col]
+    required_columns = ["video_frame", ball_x_col, ball_y_col]
     missing_columns = [
         column for column in required_columns
         if column not in df.columns
