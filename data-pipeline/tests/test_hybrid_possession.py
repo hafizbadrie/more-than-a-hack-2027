@@ -1,0 +1,108 @@
+import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from stages.ball_focused_features_extraction import (
+    extract_player_density, mask_unobserved_player_density,
+)
+from stages.hybrid_possession import add_hybrid_possession
+from stages.export import export_hybrid_evaluation
+
+
+PARAMS = {
+    "fps": 2, "pitch_m": (105.3, 68.0), "clear_distance_m": 3.0,
+    "still_distance_m": 0.5, "slow_speed_mps": 0.7,
+    "min_tracked_players": 1, "smoothing_half_window": 0,
+    "set_piece_cutoffs_s": {"free_kick": 2.0},
+}
+
+
+def frames():
+    return pd.DataFrame({
+        "period_id": [1] * 8,
+        "video_frame": np.arange(8),
+        "min_team_a_dist": [1, 5, np.nan, np.nan, 2, 2, 2, 2],
+        "min_team_b_dist": [5, 4, np.nan, np.nan, 5, 5, 5, 5],
+        "ball_x": [.1, .2, np.nan, np.nan, .5, .5, .5, .5],
+        "ball_y": [.5] * 8,
+        "sp_kind": [None, None, "free_kick", None, "free_kick", "free_kick", None, None],
+        "sp_since": [np.nan, np.nan, 1, np.nan, 1, 1, np.nan, np.nan],
+        "home_attacking": [0, 1, 0, 0, 0, 0, 0, 0],
+        "away_attacking": [0, 0, 0, 0, 0, 0, 0, 0],
+        "1_s": [2, 2, 2, 2, 0, 0, 0, 0],
+        "hmm_possession": ["A", "A", "H", "D", "A", "A", "A", "A"],
+    })
+
+
+class DensityTests(unittest.TestCase):
+    def test_missing_distance_is_not_zero_density(self):
+        source = pd.DataFrame({
+            "1_ball_dist_m": [np.nan, 4, 1, np.nan],
+            "1_team": ["Barcelona"] * 4,
+            "2_ball_dist_m": [1, 4, np.nan, np.nan],
+            "2_team": ["Atletic Club"] * 4,
+        })
+        result = extract_player_density(source)
+        self.assertTrue(np.isnan(result.loc[0, "team_a_players_1m"]))
+        self.assertEqual(result.loc[1, "team_a_players_1m"], 0)
+        self.assertEqual(result.loc[2, "team_a_players_1m"], 1)
+        self.assertTrue(np.isnan(result.loc[2, "team_b_players_1m"]))
+        self.assertTrue(np.isnan(result.loc[3, "team_a_players_1m"]))
+
+    def test_cached_density_corrected_per_team_without_mutation(self):
+        source = pd.DataFrame({"min_team_a_dist": [np.nan, 4], "min_team_b_dist": [1, np.nan]})
+        for side in ("a", "b"):
+            for radius in (1, 2, 5):
+                source[f"team_{side}_players_{radius}m"] = 0
+        original = source.copy()
+        corrected = mask_unobserved_player_density(source)
+        pd.testing.assert_frame_equal(source, original)
+        self.assertTrue(np.isnan(corrected.loc[0, "team_a_players_1m"]))
+        self.assertEqual(corrected.loc[0, "team_b_players_1m"], 0)
+        self.assertTrue(np.isnan(corrected.loc[1, "team_b_players_2m"]))
+
+
+class HybridTests(unittest.TestCase):
+    def test_geometry_tags_dead_and_unknown_fallback(self):
+        source = frames().sample(frac=1, random_state=4)
+        original = source.copy()
+        result = add_hybrid_possession(source, PARAMS)
+        pd.testing.assert_frame_equal(source, original)
+        labels = result.sort_values("video_frame")["hybrid_possession"].to_list()
+        self.assertEqual(labels, ["H", "H", "D", "X", "D", "D", "H", "H"])
+        self.assertEqual(export_hybrid_evaluation(result).columns.tolist(), ["frame", "label"])
+
+    def test_missing_ball_is_not_dead_outside_a_set_piece(self):
+        source = frames()
+        source.loc[3, "hmm_possession"] = "A"
+        result = add_hybrid_possession(source, PARAMS)
+        self.assertEqual(result.loc[3, "hybrid_possession"], "A")
+
+    def test_outside_signal_does_not_cross_gap_or_period(self):
+        source = frames().iloc[:4].copy()
+        source["ball_x"] = 1.2
+        source["sp_kind"] = None
+        source["hmm_possession"] = "A"
+        source["video_frame"] = [0, 2, 3, 4]
+        source["period_id"] = [1, 1, 1, 2]
+        result = add_hybrid_possession(source, PARAMS)
+        self.assertEqual(result["hybrid_possession"].to_list(), ["A", "D", "D", "A"])
+
+    def test_invalid_input_rejected(self):
+        source = frames()
+        for broken in [
+            source.drop(columns="1_s"),
+            source.assign(home_attacking=2),
+            source.assign(video_frame=0),
+            source.assign(hmm_possession="invalid"),
+        ]:
+            with self.assertRaises(ValueError):
+                add_hybrid_possession(broken, PARAMS)
+
+
+if __name__ == "__main__":
+    unittest.main()

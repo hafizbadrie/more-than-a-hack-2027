@@ -33,7 +33,19 @@ pip install -r data-pipeline/requirements.txt
 python data-pipeline/main.py
 ```
 
-Output: `data-pipeline/output/tactical_processed.csv`.
+The current pipeline reads the cached `output/without_hmm.csv` and writes
+`output/results.csv` (HMM) and `output/hybrid_results.csv` (experimental hybrid).
+Both outputs and the HMM diagnostic reports are overwritten on each run. Copy any
+previous predictions and reports you want to compare before starting a new run.
+
+The player-density extractor now writes missing values when a team has no observed
+player-ball distances, instead of treating missing distances as zero players. Existing
+cached features retain their old values. Set `"correct_cached_density": True` in
+`HMM_PARAMS` to mask those cached density values before fitting; `False` preserves the
+existing cached-data baseline. On this match the corrected-data fit substantially changed
+the HMM states and degraded its public-window score, so it remains opt-in pending further
+validation. Regenerating the feature cache using the extraction stages will also incorporate
+the corrected values and change the baseline.
 
 ## HMM possession stage
 
@@ -44,15 +56,13 @@ not corrected labels; in particular, a set-piece tag is a broad event window, no
 the ball is dead. This column is not a submission: the pipeline only outputs input frames,
 and a submission must separately cover every video frame.
 
-The emissions use all numeric features produced by the ball, tag, phase and team stages;
-categorical team and set-piece-type columns are excluded. Signed values use a signed `log1p`
-transform before standardization. Missing values are mean-imputed for EM training and
-marginalized during decoding; the model abstains with `X` only when every model feature is
-missing for a frame. Although the dictionary describes `ball_speed` as metres per second, its
-current implementation calculates displacement from normalized coordinates without pitch
-scaling. The centroid speeds are based on metre coordinates. The first team-speed observation
-can be unreliable because the existing team feature stage treats missing velocity components
-as zero.
+The emissions use the explicitly selected numeric features in `FEATURES` in
+[stages/hmm_possession.py](stages/hmm_possession.py). The commented-out motion and velocity
+features are not HMM inputs, although they may still be present in the exported dataset.
+Other selected features, such as ball displacement and radial movement, do use earlier
+tracking observations. Signed values use a signed `log1p` transform before standardization.
+Missing values are mean-imputed for EM training and marginalized during decoding; the model
+abstains with `X` only when every model feature is missing for a frame.
 
 For the supplied 7,501-frame sample, 971 frames (12.9%) lack both ball distances; among the
 6,530 frames with both distances, Team A is closer in 61.4% and both teams are over 10 m away
@@ -63,8 +73,9 @@ but also 15.0% of A frames, so missing tracking is not a dead-ball label. These 
 statistics informed feature choice, not parameter fitting; they are not independent validation.
 
 Initial H and A emission means are medians of the top and bottom 30% of the observed distance
-advantage outside set-piece windows. The D mean uses frames in set-piece windows with average
-centroid speed in the bottom 40%. These are weak anchors, not labels. Covariances start from
+advantage outside set-piece windows. The D mean uses set-piece-window frames with at least one
+observed model feature. These are weak anchors, not labels, and set-piece windows may include
+live play. Covariances start from
 the pooled standardized variance, and the initial diagonal transition probability is 0.997
 (roughly 13.3 seconds expected duration at 25 fps); EM can update all model parameters. After
 training, states are assigned H/A/D by the minimum total distance to those three initial means.
@@ -77,9 +88,104 @@ Training breaks sequences at frames with no observed model features, skipped fra
 period boundaries. Decoding also resets at skipped frames and period boundaries, but marginalizes
 missing feature dimensions and reports `X` only for frames with no observed model features. This
 avoids treating an untracked ball as dead or falsely joining nonconsecutive frames. The model is
-fitted and decoded on the same input; the observed sample is not a held-out test. For that sample,
-its agreement with the 7,415 overlapping public labeled frames is about 47.5% when `X` counts as
-incorrect; do not interpret this as an estimate of out-of-sample performance.
+fitted and decoded on the same input; the observed sample is not a held-out test. Previously
+reported sample agreement used a different feature set and does not measure this model.
+
+### Controlled HMM experiments
+
+The existing model remains the default. Add any of these optional entries to `HMM_PARAMS`
+in [main.py](main.py), changing one at a time and saving the previous outputs first:
+
+| Parameter | Default | Experiment |
+|---|---|---|
+| `features` | `FEATURES` | A unique list of selected names from `FEATURES`, including `min_team_a_dist` and `min_team_b_dist`. For a geometry ablation, start with those two, then add density or tag features. |
+| `min_feature_coverage` | `0.0` | Drop selected features whose observed-frame fraction is below this value, between 0 and 1. The stage fails if an anchor distance is dropped. A fully unobserved feature is always dropped. |
+| `training_missing` | `"mean"` | `"complete"` fits EM only on frames with all retained features observed, breaking training sequences around excluded frames. Decoding still marginalizes missing dimensions. This is complete-case training, **not** missing-data EM, and can introduce selection bias or leave too few training/anchor frames. |
+| `dead_anchor_max_displacement` | unset | Require observed `ball_displacement` at or below this nonnegative threshold for set-piece dead anchors. It is measured in normalized coordinates, not metres, and uses the previous valid ball observation, which can be several frames earlier. Missing displacement never qualifies. Choose a threshold based on tracking diagnostics, not the public score. |
+| `dead_anchor_max_since` | unset | Also require observed `sp_since` between zero and this many seconds. Set-piece timestamps are approximate. These anchor filters are heuristic, not verified dead-ball labels. |
+| `state_mapping` | `"anchors"` | `"distance"` assigns D to the state nearest the dead anchor, then H/A by learned team-distance advantage. This may select the wrong dead state; inspect the state diagnostics. |
+| `freeze_transitions` | `False` | `True` prevents EM from changing the initial transition matrix, allowing controlled tests of persistence. |
+| `smoothing_half_window` | `0` | A positive integer applies a centred majority vote within each uninterrupted period, frame sequence and non-`X` run. Ties keep the original label. It uses future frames and can erase real short possessions or shift transitions. |
+
+For example, to test smoothing alone, add `"smoothing_half_window": 50` to `HMM_PARAMS`.
+At 25 fps this looks two seconds in each direction. This is an experiment, not a recommended
+production threshold. Reducing the feature set can increase `X` because a frame is considered
+unobserved when all **selected** features are missing.
+
+Each run also writes `output/hmm_states.csv`: assigned state labels, transformed mean
+distance advantage, distances to the weak anchors and the learned transition probabilities.
+The advantage is the difference of the mean signed-log-transformed distances, not metres.
+For comparing fits, inspect this file and `output/hmm_feature_importance.csv` alongside the
+metrics; feature importance is emission separation, not causal importance. Do not compare
+training likelihoods across different feature sets as though they were the same objective.
+All selected features still use Gaussian emissions; the options do not implement a
+mixed categorical/count-emission model or a separate dead-ball detector.
+
+### Geometry-first hybrid experiment
+
+The pipeline also writes `output/hybrid_results.csv` separately from the HMM output.
+It uses the same cached frames and HMM predictions, and never modifies the HMM label.
+The experimental rules in [stages/hybrid_possession.py](stages/hybrid_possession.py) are:
+
+1. Assign H/A from nearest-team distances when both are available and the ball is inside
+   the pitch. A player within `clear_distance_m` makes geometry take precedence; otherwise,
+   an unambiguous attacking-team tag takes precedence over geometry.
+2. Where geometry is unavailable, use an unambiguous attacking tag, then an H/A HMM label.
+   The HMM's D state is not used as an ownership fallback; without H/A evidence the result is X.
+3. Independently label D for a ball observed outside the pitch for at least one second, or
+   during an early set-piece window when the ball is missing or still, or tracked players
+   are slow. Stillness uses a centred two-second window, scaled to the pitch in metres, with
+   80% ball observations. Player slow uses a centred median of the per-frame median
+   reported player speeds, requiring `min_tracked_players` observations per frame.
+   Unlike the related smart-tags implementation, this uses supplied speed fields rather
+   than deriving speed from player positions and has no minimum dead-run filter.
+4. Smooth H/A labels with a centred majority vote without crossing dead, X, period or
+   missing-frame boundaries. D and X are preserved; ties keep the original label.
+
+`HYBRID_PARAMS` in [main.py](main.py) contains the match-specific pitch, frame rate,
+thresholds and set-piece cutoffs. The cutoff values are based on the tracking analysis
+in [../smart-tags/TECHNICAL.md](../smart-tags/TECHNICAL.md), but are not independently
+validated for this implementation. Goal kicks and other unlisted set-piece kinds have no
+early-window dead detector; the out-of-pitch signal still applies. Missing ball tracking
+alone is not evidence of a stoppage outside a configured set-piece window. These are
+heuristics and the centred windows use future frames, so this is not a real-time model.
+
+Compare saved complete HMM and hybrid exports with
+`python data-pipeline/compare_hmm_runs.py /path/to/hmm.csv /path/to/hybrid.csv`.
+Inspect class-level and spell metrics, especially dead-ball recall and abstentions. Neither
+the new hybrid nor the density-corrected HMM is guaranteed to outperform the baseline on
+the full match; the public window is too small for model selection.
+
+### Diagnosing and comparing HMM runs
+
+The pipeline writes `output/hmm_convergence.csv` on each run. Its rows contain the EM
+iteration, recorded training log-likelihood, change from the previous iteration, final
+status, tolerance, and iteration limit. The first delta is blank. The logged likelihood is
+the value recorded by `hmmlearn` before that iteration's parameter update, not a held-out
+score. `converged` means a nonnegative final improvement below the tolerance;
+`likelihood_decreased` means a decrease greater than the library's numerical warning
+threshold; `iteration_limit` means the limit was reached without either condition.
+`not_converged` covers other stops, including tiny negative changes. A warning does not
+prevent output, so inspect it before relying on predictions.
+
+To compare two runs, save each run's `output/results.csv` and
+`output/hmm_convergence.csv` under distinct names before running again. The default paths
+are overwritten on each pipeline run. Keep the input and ground truth the same, and record
+the `HMM_PARAMS` used for each run. Then run, for example:
+
+```bash
+python data-pipeline/compare_hmm_runs.py /path/to/first.csv /path/to/second.csv
+```
+
+Both predictions must be complete, ordered `frame,label` CSVs matching the ground truth's
+frame count. Use `--gt /path/to/ground_truth.csv` to select another complete ground truth.
+The comparison reports prediction disagreements and uses the existing evaluator's accuracy,
+macro-F1, and possession-spell F1 on graded frames. Predictions of `X` count against
+frame-level scores; the evaluator fills abstentions for spell scoring. Check the graded
+abstention count as well. The public labels cover only five minutes and are not an
+independent held-out evaluation of a model trained on the same match; small metric differences
+may be noise. Changing `random_state` alone does not provide a meaningful initialization
+comparison here because the HMM's starting parameters are explicitly supplied.
 
 Run the stage tests with:
 

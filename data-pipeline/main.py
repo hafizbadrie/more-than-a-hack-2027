@@ -7,8 +7,9 @@ from kedro.runner import SequentialRunner
 from kedro_datasets.pandas import CSVDataset
 from stages.ball_focused_features_extraction import *
 from stages.clean import clean
-from stages.export import export, export_evaluation
+from stages.export import export, export_evaluation, export_hybrid_evaluation
 from stages.hmm_possession import add_hmm_possession
+from stages.hybrid_possession import add_hybrid_possession
 from stages.ingest import ingest
 from stages.smart_tags import build_phase_flags, build_tag_features
 from stages.team_focused_features_extraction import *
@@ -48,201 +49,257 @@ HMM_PARAMS = {
     "random_state": 0,
     "min_samples": 100,
     "min_anchor_samples": 10,
+    "feature_importance_path": str(ROOT / "output/hmm_feature_importance.csv"),
+    "convergence_path": str(ROOT / "output/hmm_convergence.csv"),
+    "state_diagnostics_path": str(ROOT / "output/hmm_states.csv"),
+    "smoothing_half_window": 50,
+    "correct_cached_density": False,
+    # Optional experiment settings are documented in the HMM section of README.md.
 }
+HYBRID_PARAMS = {
+    "fps": 25,
+    "pitch_m": (105.3, 68.0),
+    "clear_distance_m": 3.0,
+    "still_distance_m": 0.5,
+    "slow_speed_mps": 0.7,
+    "min_tracked_players": 5,
+    "smoothing_half_window": 50,
+    "set_piece_cutoffs_s": {
+        "corner_kick": 5.6,
+        "free_kick": 5.2,
+        "throw_in": 5.8,
+        "kick_off_after_goal": 4.0,
+    },
+}
+
+
+def prepare_cached_density(df, ball_params, hmm_params):
+    correct = hmm_params["correct_cached_density"]
+    if not isinstance(correct, bool):
+        raise ValueError("correct_cached_density must be a boolean")
+    if correct:
+        return mask_unobserved_player_density(df, ball_params)
+    return df.copy()
 
 
 def build_pipeline():
     return pipeline(
         [
+            # node(
+            #     ingest,
+            #     "raw_tactical",
+            #     "ingested",
+            #     name="ingest",
+            # ),
+            # node(
+            #     clean,
+            #     "ingested",
+            #     "cleaned",
+            #     name="clean",
+            # ),
+            # # Feature 1: Nearest player-ball distance
+            # node(
+            #     extract_nearest_player_ball_distance,
+            #     ["cleaned", "params:ball_focused_features"],
+            #     "features_nearest_player_ball_distance",
+            #     name="nearest_player_ball_distance",
+            # ),
+            # # Feature 2: Possession advantage
+            # node(
+            #     extract_possession_advantage,
+            #     [
+            #         "features_nearest_player_ball_distance",
+            #         "params:ball_focused_features",
+            #     ],
+            #     "features_possession_advantage",
+            #     name="possession_advantage",
+            # ),
+            # # Feature 3: Player density around the ball
+            # node(
+            #     extract_player_density,
+            #     [
+            #         "features_possession_advantage",
+            #         "params:ball_focused_features",
+            #     ],
+            #     "features_player_density",
+            #     name="player_density",
+            # ),
+            # # Feature 4: Ball speed
+            # node(
+            #     extract_ball_speed,
+            #     [
+            #         "features_player_density",
+            #         "params:ball_focused_features",
+            #     ],
+            #     "features_ball_speed",
+            #     name="ball_speed",
+            # ),
+            # # Feature 5: Ball acceleration
+            # node(
+            #     extract_ball_acceleration,
+            #     [
+            #         "features_ball_speed",
+            #         "params:ball_focused_features",
+            #     ],
+            #     "features_ball_acceleration",
+            #     name="ball_acceleration",
+            # ),
+            # # Feature 6: Ball direction change
+            # node(
+            #     extract_ball_direction_change,
+            #     [
+            #         "features_ball_acceleration",
+            #         "params:ball_focused_features",
+            #     ],
+            #     "features_ball_direction",
+            #     name="ball_direction_change",
+            # ),
+            # # Feature 7: Nearest player-ball relative velocity
+            # node(
+            #     extract_nearest_player_ball_relative_velocity,
+            #     [
+            #         "features_ball_direction",
+            #         "params:ball_focused_features",
+            #     ],
+            #     "features_relative_velocity",
+            #     name="nearest_player_ball_relative_velocity",
+            # ),
+            # # Feature 8: Ball trajectory toward goal
+            # node(
+            #     extract_ball_trajectory_toward_goal,
+            #     [
+            #         "features_relative_velocity",
+            #         "params:ball_focused_features",
+            #     ],
+            #     "features_ball_trajectory",
+            #     name="ball_trajectory_toward_goal",
+            # ),
+            # # Smart Tagging: Join event information to tracking features
+            # node(
+            #     build_tag_features,
+            #     [
+            #         "features_ball_trajectory",
+            #         "raw_smart_tag",
+            #         "params:features",
+            #         "match_info",
+            #     ],
+            #     "features_tagged",
+            #     name="tag_features",
+            # ),
+            # node(build_phase_flags, 
+            #     [
+            #         "features_tagged", 
+            #         "raw_smart_tag", 
+            #         "params:features", 
+            #         "match_info"
+            #     ],
+            #     "features_phased", 
+            #     name="phase_flags"
+            # ),
+            # node(
+            #     team_centroids,
+            #     "features_phased",
+            #     "with_team_centroids",
+            #     name="hbl_features",
+            # ),
+            # node(
+            #     team_dispersion,
+            #     "with_team_centroids",
+            #     "with_team_dispersion",
+            #     name="team_dispersion",
+            # ),
+            # node(
+            #     team_centroid_velocity,
+            #     ["with_team_dispersion", "params:team_focused_features"],
+            #     "with_team_centroid_velocity",
+            #     name="team_centroid_velocity",
+            # ),
+            # node(
+            #     team_average_radial_movement,
+            #     [
+            #         "with_team_centroid_velocity",
+            #         "params:team_focused_features",
+            #     ],
+            #     "with_team_average_radial_movement",
+            #     name="team_average_radial_movement",
+            # ),
+            # node(
+            #     team_width_and_depth,
+            #     "with_team_average_radial_movement",
+            #     "with_team_width_and_depth",
+            #     name="team_width_and_depth",
+            # ),
+            # node(
+            #     team_movement_coherence,
+            #     [
+            #         "with_team_width_and_depth",
+            #         "params:team_focused_features",
+            #     ],
+            #     "with_team_movement_coherence",
+            #     name="team_movement_coherence",
+            # ),
+            # node(
+            #     opponent_team_proximity,
+            #     [
+            #         "with_team_movement_coherence",
+            #         "params:team_focused_features",
+            #     ],
+            #     "with_opponent_team_proximity",
+            #     name="opponent_team_proximity",
+            # ),
+            # node(
+            #     team_position_relative_to_ball,
+            #     [
+            #         "with_opponent_team_proximity",
+            #         "params:team_focused_features",
+            #     ],
+            #     "with_team_position_relative_to_ball",
+            #     name="team_position_relative_to_ball",
+            # ),
+            # # Export dataset without HMM features
+            # node(
+            #     export,
+            #     "with_team_position_relative_to_ball",
+            #     "without_hmm",
+            #     name="export_without_hmm",
+            # ),
             node(
-                ingest,
-                "raw_tactical",
-                "ingested",
-                name="ingest",
-            ),
-            node(
-                clean,
-                "ingested",
-                "cleaned",
-                name="clean",
-            ),
-            # Feature 1: Nearest player-ball distance
-            node(
-                extract_nearest_player_ball_distance,
-                ["cleaned", "params:ball_focused_features"],
-                "features_nearest_player_ball_distance",
-                name="nearest_player_ball_distance",
-            ),
-            # Feature 2: Possession advantage
-            node(
-                extract_possession_advantage,
-                [
-                    "features_nearest_player_ball_distance",
-                    "params:ball_focused_features",
-                ],
-                "features_possession_advantage",
-                name="possession_advantage",
-            ),
-            # Feature 3: Player density around the ball
-            node(
-                extract_player_density,
-                [
-                    "features_possession_advantage",
-                    "params:ball_focused_features",
-                ],
-                "features_player_density",
-                name="player_density",
-            ),
-            # Feature 4: Ball speed
-            node(
-                extract_ball_speed,
-                [
-                    "features_player_density",
-                    "params:ball_focused_features",
-                ],
-                "features_ball_speed",
-                name="ball_speed",
-            ),
-            # Feature 5: Ball acceleration
-            node(
-                extract_ball_acceleration,
-                [
-                    "features_ball_speed",
-                    "params:ball_focused_features",
-                ],
-                "features_ball_acceleration",
-                name="ball_acceleration",
-            ),
-            # Feature 6: Ball direction change
-            node(
-                extract_ball_direction_change,
-                [
-                    "features_ball_acceleration",
-                    "params:ball_focused_features",
-                ],
-                "features_ball_direction",
-                name="ball_direction_change",
-            ),
-            # Feature 7: Nearest player-ball relative velocity
-            node(
-                extract_nearest_player_ball_relative_velocity,
-                [
-                    "features_ball_direction",
-                    "params:ball_focused_features",
-                ],
-                "features_relative_velocity",
-                name="nearest_player_ball_relative_velocity",
-            ),
-            # Feature 8: Ball trajectory toward goal
-            node(
-                extract_ball_trajectory_toward_goal,
-                [
-                    "features_relative_velocity",
-                    "params:ball_focused_features",
-                ],
-                "features_ball_trajectory",
-                name="ball_trajectory_toward_goal",
-            ),
-            # Smart Tagging: Join event information to tracking features
-            node(
-                build_tag_features,
-                [
-                    "features_ball_trajectory",
-                    "raw_smart_tag",
-                    "params:features",
-                    "match_info",
-                ],
-                "features_tagged",
-                name="tag_features",
-            ),
-            node(build_phase_flags, 
-                [
-                    "features_tagged", 
-                    "raw_smart_tag", 
-                    "params:features", 
-                    "match_info"
-                ],
-                "features_phased", 
-                name="phase_flags"
-            ),
-            node(
-                team_centroids,
-                "features_phased",
-                "with_team_centroids",
-                name="hbl_features",
-            ),
-            node(
-                team_dispersion,
-                "with_team_centroids",
-                "with_team_dispersion",
-                name="team_dispersion",
-            ),
-            node(
-                team_centroid_velocity,
-                ["with_team_dispersion", "params:team_focused_features"],
-                "with_team_centroid_velocity",
-                name="team_centroid_velocity",
-            ),
-            node(
-                team_average_radial_movement,
-                [
-                    "with_team_centroid_velocity",
-                    "params:team_focused_features",
-                ],
-                "with_team_average_radial_movement",
-                name="team_average_radial_movement",
-            ),
-            node(
-                team_width_and_depth,
-                "with_team_average_radial_movement",
-                "with_team_width_and_depth",
-                name="team_width_and_depth",
-            ),
-            node(
-                team_movement_coherence,
-                [
-                    "with_team_width_and_depth",
-                    "params:team_focused_features",
-                ],
-                "with_team_movement_coherence",
-                name="team_movement_coherence",
-            ),
-            node(
-                opponent_team_proximity,
-                [
-                    "with_team_movement_coherence",
-                    "params:team_focused_features",
-                ],
-                "with_opponent_team_proximity",
-                name="opponent_team_proximity",
-            ),
-            node(
-                team_position_relative_to_ball,
-                [
-                    "with_opponent_team_proximity",
-                    "params:team_focused_features",
-                ],
-                "with_team_position_relative_to_ball",
-                name="team_position_relative_to_ball",
+                prepare_cached_density,
+                ["without_hmm", "params:ball_focused_features", "params:hmm"],
+                "density_corrected",
+                name="correct_cached_density",
             ),
             node(
                 add_hmm_possession,
-                ["with_team_position_relative_to_ball", "params:hmm"],
+                ["density_corrected", "params:hmm"],
+                # ["with_team_position_relative_to_ball", "params:hmm"],
                 "with_hmm_possession",
                 name="hmm_possession",
             ),
             # Export final processed dataset
-            node(
-                export,
-                "with_hmm_possession",
-                "final",
-                name="export",
-            ),
+            # node(
+            #     export,
+            #     "with_hmm_possession",
+            #     "final",
+            #     name="export",
+            # ),
             node(
                 export_evaluation,
                 "with_hmm_possession",
                 "final_evaluation",
                 name="export_evaluation",
+            ),
+            node(
+                add_hybrid_possession,
+                ["with_hmm_possession", "params:hybrid"],
+                "with_hybrid_possession",
+                name="hybrid_possession",
+            ),
+            node(
+                export_hybrid_evaluation,
+                "with_hybrid_possession",
+                "hybrid_evaluation",
+                name="export_hybrid_evaluation",
             ),
         ]
     )
@@ -280,6 +337,12 @@ def build_catalog():
             "with_opponent_team_proximity": MemoryDataset(),
             "with_team_position_relative_to_ball": MemoryDataset(),
             "with_hmm_possession": MemoryDataset(),
+            "density_corrected": MemoryDataset(),
+            "with_hybrid_possession": MemoryDataset(),
+            "without_hmm": CSVDataset(
+                filepath=str(ROOT / "output/without_hmm.csv"),
+                save_args={"index": False},
+            ),
             "final": CSVDataset(
                 # filepath=str(ROOT / "output/tactical_processed_sample.csv"),
                 filepath=str(ROOT / "output/tactical_processed.csv"),
@@ -287,6 +350,10 @@ def build_catalog():
             ),
             "final_evaluation": CSVDataset(
                 filepath=str(ROOT / "output/results.csv"),
+                save_args={"index": False},
+            ),
+            "hybrid_evaluation": CSVDataset(
+                filepath=str(ROOT / "output/hybrid_results.csv"),
                 save_args={"index": False},
             ),
             "params:features": MemoryDataset(PARAMS),
@@ -297,6 +364,7 @@ def build_catalog():
                 TEAM_FOCUSED_PARAMS
             ),
             "params:hmm": MemoryDataset(HMM_PARAMS),
+            "params:hybrid": MemoryDataset(HYBRID_PARAMS),
             "match_info": MemoryDataset(MATCH_INFO),
         }
     )

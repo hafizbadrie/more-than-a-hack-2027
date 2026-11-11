@@ -12,3 +12,9 @@ def export_evaluation(df: pd.DataFrame) -> pd.DataFrame:
         and hmm_possession (rename the column as `label`)
     """
     return df[["video_frame", "hmm_possession"]].rename(columns={"video_frame": "frame", "hmm_possession": "label"})
+
+
+def export_hybrid_evaluation(df: pd.DataFrame) -> pd.DataFrame:
+    return df[["video_frame", "hybrid_possession"]].rename(
+        columns={"video_frame": "frame", "hybrid_possession": "label"}
+    )

@@ -156,8 +156,27 @@ def extract_player_density(
                 .sum(axis=1)
             )
 
-            out[f"{team_key}_players_{radius:g}m"] = count
+            out[f"{team_key}_players_{radius:g}m"] = count.where(
+                team_distances_df.notna().any(axis=1)
+            )
 
+    return out
+
+
+def mask_unobserved_player_density(df: pd.DataFrame, params: dict = PARAMS) -> pd.DataFrame:
+    """Correct cached density values where no player-ball distance was observed."""
+    required = ["min_team_a_dist", "min_team_b_dist"]
+    required += [
+        f"team_{team}_players_{radius:g}m"
+        for team in ("a", "b") for radius in params["density_radii"]
+    ]
+    missing = [column for column in required if column not in df]
+    if missing:
+        raise ValueError(f"Cannot correct cached density; missing columns: {missing}")
+    out = df.copy()
+    for team in ("a", "b"):
+        columns = [f"team_{team}_players_{radius:g}m" for radius in params["density_radii"]]
+        out.loc[out[f"min_team_{team}_dist"].isna(), columns] = np.nan
     return out
 
 
