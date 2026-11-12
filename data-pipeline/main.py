@@ -80,20 +80,40 @@ HMM_PARAMS = {
 HYBRID_PARAMS = {
     "fps": 25,
     "pitch_m": (105.3, 68.0),
-    "clear_distance_m": 3.0,
-    "geometry_first": True,
-    "still_distance_m": 0.5,
-    "slow_speed_mps": 0.7,
-    "min_tracked_players": 5,
-    "smoothing_half_window": 50,
-    "dead_min_duration_s": 2.0,
-    "dead_merge_gap_s": 2.0,
-    "min_possession_s": 3.0,
-    "set_piece_cutoffs_s": {
-        "corner_kick": 5.6,
-        "free_kick": 5.2,
-        "throw_in": 5.8,
-        "kick_off_after_goal": 4.0,
+    "components": {
+        "hmm": {},
+        "geometry": {"smoothing_half_window": 50},
+        "clear_geometry": {"smoothing_half_window": 50, "clear_distance_m": 3.0},
+        "tags": {},
+        "dead_ball": {
+            "still_distance_m": 0.5,
+            "slow_speed_mps": 0.7,
+            "dead_min_duration_s": 2.0,
+            "dead_merge_gap_s": 2.0,
+            "min_tracked_players": 5,
+            "set_piece_cutoffs_s": {
+                "corner_kick": 5.6,
+                "free_kick": 5.2,
+                "throw_in": 5.8,
+                "kick_off_after_goal": 4.0,
+            },
+        },
+    },
+    "selection": {
+        "rules": [                      # first match wins, top to bottom
+            {"use": "dead_ball"},
+            {"use": "clear_geometry"},
+            {"use": "geometry"},        # geometry above tags = your geometry_first: True
+            {"use": "tags"},
+            {"use": "hmm"},
+        ]
+    },
+    "smoothing": {
+        "dead_handling": "gap",         # "split" = the old split_at_dead
+        "steps": [
+            {"type": "majority_vote", "half_window": 50},
+            {"type": "merge_short", "min_possession_s": 3.0},
+        ],
     },
 }
 
