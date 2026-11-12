@@ -85,6 +85,9 @@ HYBRID_PARAMS = {
     "slow_speed_mps": 0.7,
     "min_tracked_players": 5,
     "smoothing_half_window": 50,
+    "dead_min_duration_s": 2.0,
+    "dead_merge_gap_s": 2.0,
+    "min_possession_s": 3.0,
     "set_piece_cutoffs_s": {
         "corner_kick": 5.6,
         "free_kick": 5.2,

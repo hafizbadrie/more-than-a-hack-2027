@@ -141,30 +141,38 @@ mixed categorical/count-emission model or a separate dead-ball detector.
 
 The HMM pipeline writes `output/hybrid_results.csv`. It uses the cached frames and
 in-memory HMM predictions, and never modifies the HMM label.
-The experimental rules in [stages/hybrid_possession.py](stages/hybrid_possession.py) are:
+The hybrid combines the HMM fallback with the geometry, tag, and smoothing approach from the
+standalone [smart-tags submission](../smart-tags/combined_submission.py). The implementation
+is adapted to the pipeline's input frame table rather than importing the standalone runner,
+which assumes a complete 199,319-frame match. It retains this pipeline's more conservative,
+set-piece-gated still/slow/missing-ball stoppage rule. Its rules in
+[stages/hybrid_possession.py](stages/hybrid_possession.py) are:
 
-1. Assign H/A from nearest-team distances when both are available and the ball is inside
-   the pitch. A player within `clear_distance_m` makes geometry take precedence; otherwise,
-   an unambiguous attacking-team tag takes precedence over geometry.
-2. Where geometry is unavailable, use an unambiguous attacking tag, then an H/A HMM label.
-   The HMM's D state is not used as an ownership fallback; without H/A evidence the result is X.
-3. Independently label D for a ball observed outside the pitch for at least one second, or
-   during an early set-piece window when the ball is missing or still, or tracked players
-   are slow. Stillness uses a centred two-second window, scaled to the pitch in metres, with
-   80% ball observations. Player slow uses a centred median of the per-frame median
-   reported player speeds, requiring `min_tracked_players` observations per frame.
-   Unlike the related smart-tags implementation, this uses supplied speed fields rather
-   than deriving speed from player positions and has no minimum dead-run filter.
-4. Smooth H/A labels with a centred majority vote without crossing dead, X, period or
-   missing-frame boundaries. D and X are preserved; ties keep the original label.
+1. Smooth nearest-team geometry labels over `smoothing_half_window` frames. A player
+   within `clear_distance_m` makes geometry take precedence; otherwise, an exclusive tag
+   signal takes precedence. The tag signal treats a team's attacking phase or the opposing
+   team's defending phase as evidence for possession. Where geometry and tags cannot decide,
+   an H/A HMM label is the fallback; the HMM's D state is not used as an ownership fallback.
+   The result is X when all three sources are inconclusive.
+2. Independently detect D for a ball observed outside the pitch for at least one second, or
+   during an early configured set-piece window when the ball is missing or still, or tracked
+   players are slow. Stillness uses a centred two-second window, scaled to the pitch in metres,
+   with 80% ball observations. Player slow uses the centred median of reported player speeds,
+   requiring `min_tracked_players` observations per frame.
+3. Merge dead-ball gaps up to `dead_merge_gap_s`, then discard dead runs shorter than
+   `dead_min_duration_s`. Finally, smooth H/A labels with a centred majority vote and merge
+   possessions shorter than `min_possession_s`. D and X labels are preserved; smoothing does
+   not cross dead-ball, period, or missing-frame boundaries, and ties keep the original label.
 
 `HYBRID_PARAMS` in [main.py](main.py) contains the match-specific pitch, frame rate,
-thresholds and set-piece cutoffs. The cutoff values are based on the tracking analysis
-in [../smart-tags/TECHNICAL.md](../smart-tags/TECHNICAL.md), but are not independently
-validated for this implementation. Goal kicks and other unlisted set-piece kinds have no
-early-window dead detector; the out-of-pitch signal still applies. Missing ball tracking
-alone is not evidence of a stoppage outside a configured set-piece window. These are
-heuristics and the centred windows use future frames, so this is not a real-time model.
+thresholds, set-piece cutoffs, and minimum-run settings. The cutoff values are based on the
+tracking analysis in [../smart-tags/TECHNICAL.md](../smart-tags/TECHNICAL.md), but are not
+independently validated for this implementation. Goal kicks and other unlisted set-piece kinds
+have no early-window dead detector; the out-of-pitch signal still applies. Missing ball tracking
+alone is not evidence of a stoppage outside a configured set-piece window. The standalone
+submission's fixed D interval for the documented half-time block is intentionally not copied:
+it is tied to absolute frame numbers. These rules remain heuristics, and the centred windows use
+future frames, so this is not a real-time model.
 
 Compare saved complete prediction exports with
 `python data-pipeline/compare_hmm_runs.py /path/to/first.csv /path/to/second.csv`.
