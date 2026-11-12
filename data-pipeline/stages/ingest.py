@@ -5,4 +5,4 @@ import pandas as pd
 def ingest(raw: pd.DataFrame) -> pd.DataFrame:
     df = raw.copy()
     df["timestamp"] = pd.to_timedelta(df["timestamp"])
-    return df.sort_values(["period_id", "frame_id"]).reset_index(drop=True)
+    return df.sort_values(["period_id", "video_frame"]).reset_index(drop=True)
