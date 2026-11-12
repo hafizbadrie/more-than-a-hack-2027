@@ -144,10 +144,13 @@ def add_hybrid_possession(df: pd.DataFrame, params: dict) -> pd.DataFrame:
 
     fps = params["fps"]
     window = params["smoothing_half_window"]
+    geometry_first = params.get("geometry_first", False)
     if not isinstance(fps, int) or isinstance(fps, bool) or fps <= 0:
         raise ValueError("Hybrid fps must be a positive integer")
     if not isinstance(window, int) or isinstance(window, bool) or window < 0:
         raise ValueError("Hybrid smoothing_half_window must be a non-negative integer")
+    if not isinstance(geometry_first, bool):
+        raise ValueError("Hybrid geometry_first must be a boolean")
     for key in ("clear_distance_m", "still_distance_m", "slow_speed_mps"):
         if not np.isfinite(params[key]) or params[key] <= 0:
             raise ValueError(f"Hybrid {key} must be positive and finite")
@@ -249,7 +252,8 @@ def add_hybrid_possession(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     labels = np.full(len(ordered), "X", dtype="<U1")
     labels[np.isin(hmm, ["H", "A"])] = hmm[np.isin(hmm, ["H", "A"])]
     labels[has_distances] = geometry_labels[has_distances]
-    labels[tag_known & ~clear] = tags[tag_known & ~clear]
+    tag_priority = ~has_distances if geometry_first else ~clear
+    labels[tag_known & tag_priority] = tags[tag_known & tag_priority]
     labels[clear] = geometry_labels[clear]
     labels[dead] = "X"
     labels = _smooth_possession_labels(

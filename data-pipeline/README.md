@@ -148,12 +148,14 @@ which assumes a complete 199,319-frame match. It retains this pipeline's more co
 set-piece-gated still/slow/missing-ball stoppage rule. Its rules in
 [stages/hybrid_possession.py](stages/hybrid_possession.py) are:
 
-1. Smooth nearest-team geometry labels over `smoothing_half_window` frames. A player
+1. Smooth nearest-team geometry labels over `smoothing_half_window` frames. By default, a player
    within `clear_distance_m` makes geometry take precedence; otherwise, an exclusive tag
-   signal takes precedence. The tag signal treats a team's attacking phase or the opposing
-   team's defending phase as evidence for possession. Where geometry and tags cannot decide,
-   an H/A HMM label is the fallback; the HMM's D state is not used as an ownership fallback.
-   The result is X when all three sources are inconclusive.
+   signal takes precedence. Set `"geometry_first": True` in `HYBRID_PARAMS` to prefer geometry
+   whenever the ball is in bounds and both team distances are observed, even when both players
+   are farther than `clear_distance_m`. The tag signal treats a team's attacking phase or the
+   opposing team's defending phase as evidence for possession. Where geometry and tags cannot
+   decide, an H/A HMM label is the fallback; the HMM's D state is not used as an ownership
+   fallback. The result is X when all three sources are inconclusive.
 2. Independently detect D for a ball observed outside the pitch for at least one second, or
    during an early configured set-piece window when the ball is missing or still, or tracked
    players are slow. Stillness uses a centred two-second window, scaled to the pitch in metres,
@@ -173,6 +175,11 @@ alone is not evidence of a stoppage outside a configured set-piece window. The s
 submission's fixed D interval for the documented half-time block is intentionally not copied:
 it is tied to absolute frame numbers. These rules remain heuristics, and the centred windows use
 future frames, so this is not a real-time model.
+
+The geometry-first option is an experiment, not the default: an ablation on the public window
+improved spell-F1 from 0.400 to 0.494, but the window has only 17 possessions and was used to
+identify the change. Validate it on independent matches or held-out clips before selecting it.
+It does not change dead-ball detection, and distant geometry can be unreliable.
 
 Compare saved complete prediction exports with
 `python data-pipeline/compare_hmm_runs.py /path/to/first.csv /path/to/second.csv`.

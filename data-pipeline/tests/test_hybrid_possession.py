@@ -91,6 +91,36 @@ class HybridTests(unittest.TestCase):
         result = add_hybrid_possession(source, PARAMS)
         self.assertEqual(result.loc[3, "hybrid_possession"], "H")
 
+    def test_geometry_first_prefers_geometry_and_preserves_fallbacks(self):
+        source = frames()
+        source.loc[0, "away_attacking"] = 1
+        source.loc[3, "away_defending"] = 1
+        source.loc[6, "min_team_b_dist"] = np.nan
+        source.loc[6, "away_attacking"] = 1
+        source.loc[7, "ball_x"] = np.nan
+        source.loc[7, "hmm_possession"] = "H"
+
+        baseline = add_hybrid_possession(source, PARAMS)
+        explicit_default = add_hybrid_possession(source, {**PARAMS, "geometry_first": False})
+        geometry_first = add_hybrid_possession(source, {**PARAMS, "geometry_first": True})
+
+        self.assertEqual(
+            baseline["hybrid_possession"].to_list(),
+            ["H", "H", "D", "H", "D", "D", "A", "H"],
+        )
+        pd.testing.assert_series_equal(
+            baseline["hybrid_possession"], explicit_default["hybrid_possession"]
+        )
+        self.assertEqual(
+            geometry_first["hybrid_possession"].to_list(),
+            ["H", "A", "D", "H", "D", "D", "A", "H"],
+        )
+
+    def test_geometry_first_requires_boolean(self):
+        for value in (1, "true", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                add_hybrid_possession(frames(), {**PARAMS, "geometry_first": value})
+
     def test_outside_signal_does_not_cross_gap_or_period(self):
         source = frames().iloc[:4].copy()
         source["ball_x"] = 1.2

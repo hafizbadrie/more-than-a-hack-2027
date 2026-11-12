@@ -81,6 +81,7 @@ HYBRID_PARAMS = {
     "fps": 25,
     "pitch_m": (105.3, 68.0),
     "clear_distance_m": 3.0,
+    "geometry_first": True,
     "still_distance_m": 0.5,
     "slow_speed_mps": 0.7,
     "min_tracked_players": 5,
