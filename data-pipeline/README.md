@@ -5,9 +5,11 @@ A small [Kedro](https://kedro.org) pipeline that turns the raw tactical tracking
 ## Pipeline overview
 
 ```
-raw_tactical ──ingest──▶ clean ──▶ ball, tag and team features ──▶ HMM ──export──▶ final
- (CSV, input)                        ▲                                              (CSV, output)
-                            smart tags + parameters
+raw_tactical ──ingest──▶ clean ──▶ ball, tag and team features ──▶ tactical_processed.csv
+                                      ▲
+                             smart tags + parameters
+
+without_hmm.csv ──▶ HMM ──▶ hybrid possession ──▶ hybrid_results.csv
 ```
 
 | Stage | File | Purpose |
@@ -18,7 +20,8 @@ raw_tactical ──ingest──▶ clean ──▶ ball, tag and team features �
 | HMM | [stages/hmm_possession.py](stages/hmm_possession.py) | Fit a three-state HMM and add provisional possession estimates |
 | export | [stages/export.py](stages/export.py) | Final shaping of the output |
 
-Everything is wired together in [main.py](main.py).
+The cleansing pipeline and catalog are defined in [main.py](main.py); the HMM and
+hybrid nodes are defined in [hmm_pipeline.py](hmm_pipeline.py).
 
 The ingest stage exposes `video_frame` as a zero-based column. For the existing tactical CSV,
 it converts the one-based source frame counter to `video_frame`; inputs already using
@@ -33,10 +36,23 @@ pip install -r data-pipeline/requirements.txt
 python data-pipeline/main.py
 ```
 
-The current pipeline reads the cached `output/without_hmm.csv` and writes
-`output/results.csv` (HMM) and `output/hybrid_results.csv` (experimental hybrid).
-Both outputs and the HMM diagnostic reports are overwritten on each run. Copy any
-previous predictions and reports you want to compare before starting a new run.
+Choose either pipeline independently:
+
+```bash
+python data-pipeline/main.py --pipeline cleansing
+python data-pipeline/main.py --pipeline hmm
+```
+
+The default (`--pipeline all`) runs both branches. Cleansing reads the tactical and
+smart-tag CSVs and writes `output/tactical_processed.csv`. HMM reads the existing
+`output/without_hmm.csv` cache and writes `output/hybrid_results.csv` and the HMM
+diagnostic reports. It does not write a separate HMM prediction CSV. These outputs
+are overwritten when their respective pipeline runs.
+
+The cache is deliberately separate from the cleansing output: neither cleansing nor
+`--pipeline all` updates `without_hmm.csv`. To run HMM on freshly generated features,
+after saving any cache you wish to keep, explicitly copy `tactical_processed.csv` to
+`without_hmm.csv`, then run `--pipeline hmm`. This can change the HMM baseline.
 
 The player-density extractor now writes missing values when a team has no observed
 player-ball distances, instead of treating missing distances as zero players. Existing
@@ -123,8 +139,8 @@ mixed categorical/count-emission model or a separate dead-ball detector.
 
 ### Geometry-first hybrid experiment
 
-The pipeline also writes `output/hybrid_results.csv` separately from the HMM output.
-It uses the same cached frames and HMM predictions, and never modifies the HMM label.
+The HMM pipeline writes `output/hybrid_results.csv`. It uses the cached frames and
+in-memory HMM predictions, and never modifies the HMM label.
 The experimental rules in [stages/hybrid_possession.py](stages/hybrid_possession.py) are:
 
 1. Assign H/A from nearest-team distances when both are available and the ball is inside
@@ -150,8 +166,8 @@ early-window dead detector; the out-of-pitch signal still applies. Missing ball 
 alone is not evidence of a stoppage outside a configured set-piece window. These are
 heuristics and the centred windows use future frames, so this is not a real-time model.
 
-Compare saved complete HMM and hybrid exports with
-`python data-pipeline/compare_hmm_runs.py /path/to/hmm.csv /path/to/hybrid.csv`.
+Compare saved complete prediction exports with
+`python data-pipeline/compare_hmm_runs.py /path/to/first.csv /path/to/second.csv`.
 Inspect class-level and spell metrics, especially dead-ball recall and abstentions. Neither
 the new hybrid nor the density-corrected HMM is guaranteed to outperform the baseline on
 the full match; the public window is too small for model selection.
@@ -168,7 +184,7 @@ threshold; `iteration_limit` means the limit was reached without either conditio
 `not_converged` covers other stops, including tiny negative changes. A warning does not
 prevent output, so inspect it before relying on predictions.
 
-To compare two runs, save each run's `output/results.csv` and
+To compare two runs, save each run's `output/hybrid_results.csv` and
 `output/hmm_convergence.csv` under distinct names before running again. The default paths
 are overwritten on each pipeline run. Keep the input and ground truth the same, and record
 the `HMM_PARAMS` used for each run. Then run, for example:
@@ -297,7 +313,13 @@ intervals, not ground-truth possession labels.
 | `team_movement_coherence_players_<team>` | Number of moving players with valid directions used to calculate the team's movement coherence. |
 | `opponent_team_centroid_distance` | Euclidean distance in metres between the two team centroids. |
 | `opponent_team_closing_speed` | Rate of change of the inter-centroid distance in metres per second; positive means the teams are approaching, negative means they are separating. |
-| `team_ball_longitudinal_distance_<team>`, `team_ball_lateral_distance_<team>` | Ball position relative to the team's centroid along the team's attacking x direction and the positive y direction, respectively. In the current output, normalized ball coordinates are subtracted from metre-based centroid coordinates, so these values have mixed units and must not be interpreted as physical distances. `<team>` is `barcelona` or `atletic_club`. |
+| `team_ball_longitudinal_distance_<team>`, `team_ball_lateral_distance_<team>` | Ball position relative to the team's centroid along the team's attacking x direction and the positive y direction, respectively, in metres. Ball coordinates are converted from normalized pitch coordinates using the configured pitch dimensions. `<team>` is `barcelona` or `atletic_club`. |
+
+Attack-facing features use `period_direction_multipliers` in the ball- and
+team-focused parameters. It maps each `period_id` to `+1` or `-1`; the configured
+team directions are multiplied by that value. The match defaults use `{1: 1, 2: -1}`
+to account for the halftime switch. If a configured period is absent from the mapping,
+the feature stage raises an error rather than applying a potentially incorrect direction.
 
 Team velocity, radial movement, and closing-speed features are based on successive valid
 observations at the configured 25 frames per second; their first observation in a period, or an
@@ -313,21 +335,21 @@ interval without a prior valid observation, has no velocity value.
 
 ## Adding a new feature node, step by step
 
-Example: add a node that computes ball acceleration from `ball_speed`.
+Example: add a node that computes the absolute difference between the two teams'
+nearest-player distances.
 
 ### Step 1 – Write the function
 
-Create a new file, e.g. `data-pipeline/stages/acceleration.py`.
+Create a new file, e.g. `data-pipeline/stages/distance_gap.py`.
 
 ```python
-"""Feature: ball acceleration."""
+"""Feature: nearest-player distance gap."""
 import pandas as pd
 
 
-def add_ball_acceleration(df: pd.DataFrame, params: dict) -> pd.DataFrame:
-    out = df.copy()  # never mutate the input
-    dt = out["seconds"].diff()
-    out["ball_acceleration"] = out["ball_speed"].diff() / dt
+def add_distance_gap(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["distance_gap"] = (out["min_team_a_dist"] - out["min_team_b_dist"]).abs()
     return out
 ```
 
@@ -337,15 +359,13 @@ Rules of thumb:
 - Return a new dataframe (`df.copy()`) instead of modifying the input.
 - The function arguments are positional and follow the order of the node's inputs list (Step 3).
 
-> Alternative: if the feature is small, add it to `build_features` in [stages/features.py](stages/features.py) and skip Steps 2–5. No pipeline or catalog change is needed.
-
 ### Step 2 – Import it in `main.py`
 
 ```python
-from stages.acceleration import add_ball_acceleration
+from stages.distance_gap import add_distance_gap
 ```
 
-### Step 3 – Register the node in `build_pipeline()`
+### Step 3 – Register the node in `build_cleansing_pipeline()`
 
 Add a `node(...)` entry in the `pipeline([...])` list. Syntax:
 
@@ -353,16 +373,17 @@ Add a `node(...)` entry in the `pipeline([...])` list. Syntax:
 node(function, inputs, outputs, name="unique_name")
 ```
 
-Insert it where its input already exists. Here we consume `"features"` (produced by the `features` node) and produce a new dataset `"features_accel"`, so it goes after the `features` node:
+Insert it where its input already exists. Here we consume
+`"with_team_position_relative_to_ball"` and produce a new dataset `"features_gap"`,
+immediately before export:
 
 ```python
-node(build_features, ["cleaned", "params:features", "match_info"], "features", name="features"),
-node(add_ball_acceleration, "features", "features_accel", name="acceleration"),   # NEW
-node(export, "features_accel", "final", name="export"),                           # input changed
+node(add_distance_gap, "with_team_position_relative_to_ball", "features_gap", name="distance_gap"),
+node(export, "features_gap", "final", name="export"),
 ```
 
 Important:
-- Because the new node sits between `features` and `export`, change `export`'s input from `"features"` to `"features_accel"`. Otherwise your node's output is ignored.
+- Change `export`'s input to `"features_gap"`; otherwise your node's output is ignored.
 - `name` must be unique.
 - Inputs may be a string (one input) or a list (several inputs, passed to the function in that order).
 - The list order is not what determines execution; dataset names do. Still, keep it in logical order.
@@ -373,7 +394,7 @@ Open `build_catalog()` in [main.py](main.py). Update it **only** in these cases:
 
 | Case | Action |
 |------|--------|
-| Your node produces a new intermediate dataset (like `features_accel`) | Add `"features_accel": MemoryDataset()` |
+| Your node produces a new intermediate dataset (like `features_gap`) | Add `"features_gap": MemoryDataset()` |
 | Your node needs a new input file | Add `"my_input": CSVDataset(filepath=...)` |
 | Your node needs new parameters | Add `"params:my_feature": MemoryDataset({...})` |
 | You want to save the node's output to disk | Use `CSVDataset(filepath=..., save_args={"index": False})` |
@@ -382,18 +403,17 @@ Open `build_catalog()` in [main.py](main.py). Update it **only** in these cases:
 For this example:
 
 ```python
-"features": MemoryDataset(),
-"features_accel": MemoryDataset(),   # NEW
+"features_gap": MemoryDataset(),
 ```
 
 Using parameters? Define them next to `PARAMS`, then register:
 
 ```python
 PARAMS = {"smoothing_window": 5}
-ACCEL_PARAMS = {"min_dt": 0.04}                      # NEW
+MY_FEATURE_PARAMS = {"threshold": 0.04}              # NEW
 
-"params:accel": MemoryDataset(ACCEL_PARAMS),         # NEW, in the catalog
-node(add_ball_acceleration, ["features", "params:accel"], "features_accel", name="acceleration")
+"params:my_feature": MemoryDataset(MY_FEATURE_PARAMS),  # NEW, in the catalog
+node(my_feature, ["with_team_position_relative_to_ball", "params:my_feature"], "features_gap", name="my_feature")
 ```
 
 Use the `params:<name>` naming convention so parameters are easy to spot.
@@ -401,10 +421,10 @@ Use the `params:<name>` naming convention so parameters are easy to spot.
 ### Step 5 – Run and check
 
 ```bash
-python data-pipeline/main.py
+python data-pipeline/main.py --pipeline cleansing
 ```
 
-Open `data-pipeline/output/tactical_processed.csv` and confirm the new column (`ball_acceleration`) exists.
+Open `data-pipeline/output/tactical_processed.csv` and confirm the new column (`distance_gap`) exists.
 
 ## Common errors
 
@@ -421,7 +441,7 @@ Open `data-pipeline/output/tactical_processed.csv` and confirm the new column (`
 
 - [ ] Function written in `stages/` (takes and returns a dataframe, no I/O)
 - [ ] Imported in `main.py`
-- [ ] Added to `build_pipeline()` with a unique `name`
+- [ ] Added to `build_cleansing_pipeline()` with a unique `name`
 - [ ] Downstream node (e.g. `export`) reads your output name
 - [ ] New dataset names / parameters registered in `build_catalog()`
-- [ ] `python data-pipeline/main.py` runs and the output CSV has your feature
+- [ ] `python data-pipeline/main.py --pipeline cleansing` runs and the output CSV has your feature

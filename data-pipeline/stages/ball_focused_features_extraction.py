@@ -1,6 +1,7 @@
 """Feature extraction stages contributed by Dani."""
 import pandas as pd
 import numpy as np
+from stages.direction import period_direction_multipliers
 
 PARAMS = {
     "team_a": "Barcelona",
@@ -839,7 +840,7 @@ def extract_ball_trajectory_toward_goal(
         - Uses the actual average ball speed between valid observations.
         - Does not assume the nearest player is the possession team.
         - Calculates both teams' attacking perspectives independently.
-        - Attack directions must reflect the current playing half.
+        - Period direction multipliers reverse directions after a side switch.
         - Does not interpolate missing ball observations.
         - Preserves all existing columns and features.
     """
@@ -883,6 +884,7 @@ def extract_ball_trajectory_toward_goal(
             "The two opposing teams should attack in opposite "
             "directions during the same half."
         )
+    direction_multiplier = period_direction_multipliers(out, params)
 
     # Calculate horizontal ball velocity.
     # ball_speed contains the magnitude of the velocity.
@@ -897,12 +899,12 @@ def extract_ball_trajectory_toward_goal(
 
     # Project ball velocity onto Team A's attacking direction
     out["ball_velocity_toward_team_a_goal"] = (
-        out["ball_velocity_x"] * team_a_direction
+        out["ball_velocity_x"] * team_a_direction * direction_multiplier
     )
 
     # Project ball velocity onto Team B's attacking direction
     out["ball_velocity_toward_team_b_goal"] = (
-        out["ball_velocity_x"] * team_b_direction
+        out["ball_velocity_x"] * team_b_direction * direction_multiplier
     )
 
     # Determine whether the ball moves toward each team's goal.

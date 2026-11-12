@@ -2,6 +2,7 @@
 import re
 import pandas as pd
 import numpy as np
+from stages.direction import period_direction_multipliers
 
 
 def _clean_team_name(team) -> str:
@@ -41,6 +42,24 @@ def _build_player_data(features_hbl: pd.DataFrame) -> tuple[pd.DataFrame, list[s
 		ignore_index=True,
 	)
 	return player_data, frame_cols
+
+
+def _ball_coordinates_in_metres(
+    df: pd.DataFrame,
+    ball_x_col: str,
+    ball_y_col: str,
+    pitch_m: tuple[float, float],
+) -> tuple[pd.Series, pd.Series]:
+    try:
+        pitch_length, pitch_width = (float(dimension) for dimension in pitch_m)
+    except (TypeError, ValueError):
+        raise ValueError("pitch_m must contain positive finite length and width") from None
+    if not np.isfinite([pitch_length, pitch_width]).all() or min(pitch_length, pitch_width) <= 0:
+        raise ValueError("pitch_m must contain positive finite length and width")
+
+    ball_x = pd.to_numeric(df[ball_x_col], errors="coerce") * pitch_length
+    ball_y = pd.to_numeric(df[ball_y_col], errors="coerce") * pitch_width
+    return ball_x, ball_y
 
 
 def team_centroids(feature_phased: pd.DataFrame) -> pd.DataFrame:
@@ -251,6 +270,7 @@ def team_average_radial_movement(
     fps = params.get("fps", 25.0)
     ball_x_col = params.get("ball_x_col", "ball_x")
     ball_y_col = params.get("ball_y_col", "ball_y")
+    pitch_m = params.get("pitch_m", (105.3, 68.0))
     """
     Feature set 4: Team average radial movement relative to the ball.
 
@@ -288,6 +308,9 @@ def team_average_radial_movement(
         raise ValueError(
             f"Missing required columns for radial movement: {missing_columns}"
         )
+    ball_x_m, ball_y_m = _ball_coordinates_in_metres(
+        df, ball_x_col, ball_y_col, pitch_m
+    )
 
     # Identify players with matching X, Y and team columns.
     player_ids = [
@@ -319,8 +342,8 @@ def team_average_radial_movement(
                 team=df[f"{player_id}_team"],
                 x=pd.to_numeric(df[f"{player_id}_x_m"], errors="coerce"),
                 y=pd.to_numeric(df[f"{player_id}_y_m"], errors="coerce"),
-                ball_x=pd.to_numeric(df[ball_x_col], errors="coerce"),
-                ball_y=pd.to_numeric(df[ball_y_col], errors="coerce"),
+                ball_x=ball_x_m,
+                ball_y=ball_y_m,
             )
             for player_id in player_ids
         ],
@@ -667,6 +690,7 @@ def team_position_relative_to_ball(
     ball_x_col = params.get("ball_x_col", "ball_x")
     ball_y_col = params.get("ball_y_col", "ball_y")
     attack_directions = params.get("attack_directions")
+    pitch_m = params.get("pitch_m", (105.3, 68.0))
     """
     Feature set 8: Team positional relationship to ball.
 
@@ -682,6 +706,9 @@ def team_position_relative_to_ball(
     attack_directions:
         Dictionary mapping original team names to their X-axis
         attacking direction (+1 or -1).
+    period_direction_multipliers:
+        Optional mapping from period_id to +1/-1 to account for teams
+        switching ends. Missing periods are rejected.
 
         Example:
             {
@@ -701,6 +728,10 @@ def team_position_relative_to_ball(
         raise ValueError(
             f"Missing required ball columns: {missing_columns}"
         )
+    ball_x_m, ball_y_m = _ball_coordinates_in_metres(
+        df, ball_x_col, ball_y_col, pitch_m
+    )
+    direction_multiplier = period_direction_multipliers(df, params)
 
     player_data, frame_cols = _build_player_data(df)
 
@@ -716,12 +747,9 @@ def team_position_relative_to_ball(
         .copy()
         .assign(
             **{
-                ball_x_col: lambda x: pd.to_numeric(
-                    x[ball_x_col], errors="coerce"
-                ),
-                ball_y_col: lambda x: pd.to_numeric(
-                    x[ball_y_col], errors="coerce"
-                ),
+                ball_x_col: ball_x_m,
+                ball_y_col: ball_y_m,
+                "_period_direction_multiplier": direction_multiplier,
             }
         )
         .drop_duplicates(subset=frame_cols, keep="first")
@@ -768,7 +796,7 @@ def team_position_relative_to_ball(
             f"team_ball_longitudinal_distance_{team_name}"
         ] = (
             team_positions[ball_x_col] - team_positions["centroid_x"]
-        ) * direction
+        ) * direction * team_positions["_period_direction_multiplier"]
 
         # Positive means the ball is towards positive Y.
         team_positions[
