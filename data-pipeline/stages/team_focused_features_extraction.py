@@ -44,6 +44,66 @@ def _build_player_data(features_hbl: pd.DataFrame) -> tuple[pd.DataFrame, list[s
 	return player_data, frame_cols
 
 
+def _player_arrays(df: pd.DataFrame):
+    """Prepare paired coordinates and per-frame team masks for unique frames."""
+    frame_cols = ["period_id", "video_frame"] if "period_id" in df else ["video_frame"]
+    if "video_frame" not in df:
+        raise ValueError("Cannot calculate team features without a 'video_frame' column.")
+    player_ids = [
+        column[:-4] for column in df.columns
+        if column.endswith("_x_m")
+        and column[:-4] + "_y_m" in df
+        and column[:-4] + "_team" in df
+    ]
+    if not player_ids:
+        raise ValueError(
+            "Cannot calculate team features: no matching player _x_m, _y_m, "
+            "and _team columns found."
+        )
+    # The long-form path groups repeated frame keys and handles infinite values.
+    if df.duplicated(frame_cols).any():
+        return None
+    x = np.column_stack([
+        pd.to_numeric(df[f"{player}_x_m"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        for player in player_ids
+    ])
+    y = np.column_stack([
+        pd.to_numeric(df[f"{player}_y_m"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        for player in player_ids
+    ])
+    if np.isinf(x).any() or np.isinf(y).any():
+        return None
+    team_columns = [df[f"{player}_team"] for player in player_ids]
+    teams = pd.unique(pd.concat(
+        [column.dropna().drop_duplicates() for column in team_columns], ignore_index=True
+    ))
+    valid = ~np.isnan(x) & ~np.isnan(y)
+    return frame_cols, x, y, valid, team_columns, teams
+
+
+def _team_mask(valid, team_columns, team):
+    return valid & np.column_stack([
+        column.eq(team).fillna(False).to_numpy(dtype=bool)
+        for column in team_columns
+    ])
+
+
+def _centroid_arrays(x, y, valid):
+    count = valid.sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cx = np.where(valid, x, 0).sum(axis=1) / count
+        cy = np.where(valid, y, 0).sum(axis=1) / count
+    return cx, cy, count
+
+
+def _frame_results(df, frame_cols, valid, **columns):
+    observed = valid & df[frame_cols].notna().all(axis=1).to_numpy()
+    result = df.loc[observed, frame_cols].copy()
+    for name, values in columns.items():
+        result[name] = values[observed]
+    return result
+
+
 def _ball_coordinates_in_metres(
     df: pd.DataFrame,
     ball_x_col: str,
@@ -95,6 +155,23 @@ def _ball_coordinates_in_metres(
 def team_centroids(feature_phased: pd.DataFrame) -> pd.DataFrame:
 	"""Feature set 1: Add per-team frame centroids from all tracked player coordinates."""
 	df = feature_phased.copy()
+	arrays = _player_arrays(df)
+	if arrays is not None:
+		frame_cols, x, y, valid, team_columns, teams = arrays
+		cx, cy, count = _centroid_arrays(x, y, valid)
+		df = df.merge(_frame_results(
+			df, frame_cols, count > 0,
+			team_centroid_x_all_players=cx, team_centroid_y_all_players=cy,
+		), on=frame_cols, how="left")
+		for team in teams:
+			team_name = _clean_team_name(team)
+			mask = _team_mask(valid, team_columns, team)
+			cx, cy, count = _centroid_arrays(x, y, mask)
+			df = df.merge(_frame_results(df, frame_cols, count > 0, **{
+				f"team_centroid_x_{team_name}": cx,
+				f"team_centroid_y_{team_name}": cy,
+			}), on=frame_cols, how="left")
+		return df
 	player_data, frame_cols = _build_player_data(df)
 	overall_centroids = (
 		player_data.dropna(subset=["x", "y"])
@@ -133,6 +210,23 @@ def team_centroids(feature_phased: pd.DataFrame) -> pd.DataFrame:
 def team_dispersion(with_team_centroids: pd.DataFrame) -> pd.DataFrame:
 	# Feature set 2: Team dispersion. It's defined as the average distance for each player from the team centroid.
 	df = with_team_centroids.copy()
+	arrays = _player_arrays(df)
+	if arrays is not None:
+		frame_cols, x, y, valid, team_columns, teams = arrays
+		for team in teams:
+			team_name = _clean_team_name(team)
+			mask = _team_mask(valid, team_columns, team)
+			cx = df[f"team_centroid_x_{team_name}"].to_numpy(dtype=float, na_value=np.nan)
+			cy = df[f"team_centroid_y_{team_name}"].to_numpy(dtype=float, na_value=np.nan)
+			distances = np.hypot(x - cx[:, None], y - cy[:, None])
+			mask &= ~np.isnan(distances)
+			count = mask.sum(axis=1)
+			with np.errstate(invalid="ignore", divide="ignore"):
+				dispersion = np.where(mask, distances, 0).sum(axis=1) / count
+			df = df.merge(_frame_results(df, frame_cols, count > 0, **{
+				f"team_dispersion_{team_name}": dispersion,
+			}), on=frame_cols, how="left")
+		return df
 	player_data, frame_cols = _build_player_data(df)
 	teams = player_data["team"].dropna().unique()
 
@@ -479,6 +573,22 @@ def team_width_and_depth(features: pd.DataFrame) -> pd.DataFrame:
     """
     df = features.copy()
 
+    arrays = _player_arrays(df)
+    if arrays is not None:
+        frame_cols, x, y, valid, team_columns, teams = arrays
+        for team in teams:
+            team_name = _clean_team_name(team)
+            mask = _team_mask(valid, team_columns, team)
+            count = mask.sum(axis=1)
+            width = np.where(mask, y, -np.inf).max(axis=1) - np.where(mask, y, np.inf).min(axis=1)
+            depth = np.where(mask, x, -np.inf).max(axis=1) - np.where(mask, x, np.inf).min(axis=1)
+            df = df.merge(_frame_results(df, frame_cols, count > 0, **{
+                f"team_width_{team_name}": width,
+                f"team_depth_{team_name}": depth,
+                f"team_tracked_players_{team_name}": count,
+            }), on=frame_cols, how="left", validate="many_to_one", sort=False)
+        return df
+
     player_data, frame_cols = _build_player_data(df)
 
     teams = player_data["team"].dropna().unique()
@@ -642,9 +752,12 @@ def opponent_team_proximity(
         raise ValueError("'fps' must be greater than zero.")
 
     df = features.copy()
-    player_data, frame_cols = _build_player_data(df)
-
-    teams = player_data["team"].dropna().unique()
+    arrays = _player_arrays(df)
+    if arrays is None:
+        player_data, frame_cols = _build_player_data(df)
+        teams = player_data["team"].dropna().unique()
+    else:
+        frame_cols, x, y, valid, team_columns, teams = arrays
 
     if len(teams) != 2:
         raise ValueError(
@@ -652,29 +765,33 @@ def opponent_team_proximity(
             f"Found {len(teams)} teams: {list(teams)}"
         )
 
-    centroids = (
-        player_data.dropna(subset=["x", "y"])
-        .groupby(frame_cols + ["team"])[["x", "y"]]
-        .mean()
-        .reset_index()
-    )
-
-    centroids = centroids.pivot(
-        index=frame_cols,
-        columns="team",
-        values=["x", "y"],
-    )
-
     team_a, team_b = teams
-
-    proximity = pd.DataFrame(index=centroids.index)
-
-    proximity["opponent_team_centroid_distance"] = np.hypot(
-        centroids[("x", team_a)] - centroids[("x", team_b)],
-        centroids[("y", team_a)] - centroids[("y", team_b)],
-    )
-
-    proximity = proximity.reset_index().sort_values(frame_cols)
+    if arrays is not None:
+        ax, ay, ac = _centroid_arrays(x, y, _team_mask(valid, team_columns, team_a))
+        bx, by, bc = _centroid_arrays(x, y, _team_mask(valid, team_columns, team_b))
+        # Match the long-form pivot's handling of a team with no observations.
+        keyed = df[frame_cols].notna().all(axis=1).to_numpy()
+        if not ac[keyed].any() or not bc[keyed].any():
+            arrays = None
+            player_data, frame_cols = _build_player_data(df)
+        else:
+            proximity = _frame_results(df, frame_cols, (ac + bc) > 0, **{
+                "opponent_team_centroid_distance": np.hypot(ax - bx, ay - by),
+            }).sort_values(frame_cols)
+    if arrays is None:
+        centroids = (
+            player_data.dropna(subset=["x", "y"])
+            .groupby(frame_cols + ["team"])[["x", "y"]]
+            .mean()
+            .reset_index()
+            .pivot(index=frame_cols, columns="team", values=["x", "y"])
+        )
+        proximity = pd.DataFrame(index=centroids.index)
+        proximity["opponent_team_centroid_distance"] = np.hypot(
+            centroids[("x", team_a)] - centroids[("x", team_b)],
+            centroids[("y", team_a)] - centroids[("y", team_b)],
+        )
+        proximity = proximity.reset_index().sort_values(frame_cols)
 
     grouping_cols = ["period_id"] if "period_id" in frame_cols else []
 
@@ -750,9 +867,12 @@ def team_position_relative_to_ball(
     ball_x_m, ball_y_m = _ball_coordinates_in_metres(
         df, ball_x_col, ball_y_col
     )
-    player_data, frame_cols = _build_player_data(df)
-
-    teams = player_data["team"].dropna().unique()
+    arrays = _player_arrays(df)
+    if arrays is None:
+        player_data, frame_cols = _build_player_data(df)
+        teams = player_data["team"].dropna().unique()
+    else:
+        frame_cols, x, y, valid, team_columns, teams = arrays
 
     if attack_directions_by_period is None and attack_directions is None:
         raise ValueError(
@@ -784,19 +904,20 @@ def team_position_relative_to_ball(
 
         team_name = _clean_team_name(team)
 
-        team_centroid = (
-            player_data.loc[player_data["team"].eq(team)]
-            .dropna(subset=["x", "y"])
-            .groupby(frame_cols)[["x", "y"]]
-            .mean()
-            .reset_index()
-            .rename(
-                columns={
-                    "x": "centroid_x",
-                    "y": "centroid_y",
-                }
+        if arrays is None:
+            team_centroid = (
+                player_data.loc[player_data["team"].eq(team)]
+                .dropna(subset=["x", "y"])
+                .groupby(frame_cols)[["x", "y"]]
+                .mean()
+                .reset_index()
+                .rename(columns={"x": "centroid_x", "y": "centroid_y"})
             )
-        )
+        else:
+            cx, cy, count = _centroid_arrays(x, y, _team_mask(valid, team_columns, team))
+            team_centroid = _frame_results(
+                df, frame_cols, count > 0, centroid_x=cx, centroid_y=cy
+            )
 
         team_positions = team_centroid.merge(
             ball_positions.assign(_attack_direction=direction),

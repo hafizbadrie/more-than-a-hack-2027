@@ -1,13 +1,19 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from stages.team_focused_features_extraction import (
+    opponent_team_proximity,
     team_average_radial_movement,
+    team_centroids,
+    team_dispersion,
     team_position_relative_to_ball,
+    team_width_and_depth,
 )
 from stages.ball_focused_features_extraction import (
     extract_ball_acceleration,
@@ -18,6 +24,89 @@ from stages.ball_focused_features_extraction import (
     extract_nearest_player_ball_relative_velocity,
 )
 from stages.direction import infer_attack_directions
+
+
+class TeamSpatialVectorizationTests(unittest.TestCase):
+    def test_spatial_features_match_long_form_with_changing_teams_and_missing_data(self):
+        source = pd.DataFrame({
+            "period_id": [1, 1, 1, 1, 2, 2, 2],
+            "video_frame": [2, 0, 1, 3, 0, 1, 2],
+            "ball_x": [0.5] * 7,
+            "ball_y": [0.5] * 7,
+            "1_x": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
+            "1_y": [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            "1_x_m": [10, 20, np.nan, 40, 50, 60, 70],
+            "1_y_m": [20, 30, 40, np.nan, 60, 70, 80],
+            "1_team": ["A", "A", "A", "A", "B", "B", None],
+            "2_x_m": [30, 40, 50, np.nan, 70, 80, 90],
+            "2_y_m": [40, 50, 60, np.nan, 80, 90, 100],
+            "2_team": ["B", "B", "B", "B", "A", "A", "A"],
+            "3_x_m": [20, "bad", 10, np.nan, 30, 20, 10],
+            "3_y_m": [30, 50, 20, np.nan, 40, 30, 20],
+            "3_team": ["A", "A", None, "A", "B", "B", "B"],
+        }, index=[10, 20, 30, 40, 50, 60, 70])
+        params = {"attack_directions": {"A": 1, "B": -1}}
+
+        def extract(frame):
+            frame = team_centroids(frame)
+            frame = team_dispersion(frame)
+            frame = team_width_and_depth(frame)
+            frame = opponent_team_proximity(frame, {"fps": 2})
+            return team_position_relative_to_ball(frame, params)
+
+        with patch("stages.team_focused_features_extraction._player_arrays", return_value=None):
+            expected = extract(source)
+        with patch("stages.team_focused_features_extraction._build_player_data",
+                   side_effect=AssertionError("unexpected long-form conversion")):
+            actual = extract(source)
+        pd.testing.assert_frame_equal(actual, expected, check_dtype=False, atol=1e-10)
+        self.assertAlmostEqual(actual.loc[0, "team_centroid_x_a"], 15.0)
+        self.assertAlmostEqual(actual.loc[4, "team_centroid_x_b"], 40.0)
+        self.assertTrue(pd.isna(actual.loc[2, "team_centroid_x_a"]))
+        self.assertTrue(pd.isna(actual.loc[3, "team_width_a"]))
+        self.assertEqual(actual.loc[4, "team_tracked_players_b"], 2)
+
+    def test_repeated_frame_keys_keep_long_form_grouping(self):
+        source = pd.DataFrame({
+            "video_frame": [0, 0, 1],
+            "1_x_m": [0.0, 10.0, 20.0],
+            "1_y_m": [0.0, 10.0, 20.0],
+            "1_team": ["A", "A", "A"],
+            "2_x_m": [30.0, 40.0, 50.0],
+            "2_y_m": [30.0, 40.0, 50.0],
+            "2_team": ["B", "B", "B"],
+        })
+        result = team_width_and_depth(team_dispersion(team_centroids(source)))
+        self.assertEqual(result["team_centroid_x_a"].tolist(), [5.0, 5.0, 20.0])
+        self.assertEqual(result["team_width_a"].tolist(), [10.0, 10.0, 0.0])
+        self.assertEqual(result["team_tracked_players_a"].tolist(), [2, 2, 1])
+
+    def test_missing_frame_keys_and_nullable_coordinates_are_excluded(self):
+        source = pd.DataFrame({
+            "video_frame": [0.0, np.nan, 2.0],
+            "1_x_m": pd.Series([1.0, 5.0, pd.NA], dtype="Float64"),
+            "1_y_m": pd.Series([2.0, 5.0, 2.0], dtype="Float64"),
+            "1_team": ["A", "A", "A"],
+            "2_x_m": [4.0, 9.0, 4.0],
+            "2_y_m": [6.0, 9.0, 6.0],
+            "2_team": ["B", "B", "B"],
+        })
+
+        def extract():
+            return team_width_and_depth(team_centroids(source))
+
+        with patch("stages.team_focused_features_extraction._player_arrays", return_value=None):
+            expected = extract()
+        actual = extract()
+        pd.testing.assert_frame_equal(
+            actual.filter(regex="^team_").astype(float),
+            expected.filter(regex="^team_").astype(float),
+        )
+        self.assertTrue(pd.isna(actual.loc[1, "team_centroid_x_a"]))
+        self.assertTrue(pd.isna(actual.loc[2, "team_width_a"]))
+        proximity = opponent_team_proximity(actual)
+        self.assertAlmostEqual(proximity.loc[0, "opponent_team_centroid_distance"], 5.0)
+        self.assertTrue(pd.isna(proximity.loc[1, "opponent_team_centroid_distance"]))
 
 
 class BallCoordinateUnitTests(unittest.TestCase):
