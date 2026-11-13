@@ -251,7 +251,7 @@ no observations.
 | Columns | Definition |
 |---------|------------|
 | `1_team` through `46_team` (one column per integer slot) | Team assigned to that tracking slot (in this match, `Barcelona` or `Atletic Club`); empty when unavailable. The slot is not a persistent player identity. |
-| For each slot `2, 3, 4, 6, 9, 11, 12, 13, 15, 16, 17, 18, 21, 24, 26, 29, 30, 31, 32, 33, 34, 35, 37, 41, 43, 45, 46`: `<slot>_x_m` | Slot's x position converted from normalised pitch coordinates to metres using the 105.3 m pitch length. |
+| For each slot `2, 3, 4, 6, 9, 11, 12, 13, 15, 16, 17, 18, 21, 24, 26, 29, 30, 31, 32, 33, 34, 35, 37, 41, 43, 45, 46`: `<slot>_x_m` | Slot's x position converted from normalised pitch coordinates to metres; the supplied output uses a 105 m scale. |
 | Same slots as `<slot>_x_m`: `<slot>_y_m` | Slot's y position converted from normalised pitch coordinates to metres using the 68.0 m pitch width. |
 | For each slot `2, 3, 4, 6, 9, 11, 12, 15, 16, 17, 18, 21, 24, 26, 29, 30, 31, 32, 33, 34, 35, 37, 41, 43, 45, 46`: `<slot>_ball_dist_m` | Euclidean distance in metres from the tracked slot to the ball. This output has no distance column for slot 13. |
 
@@ -328,7 +328,13 @@ intervals, not ground-truth possession labels.
 | `team_movement_coherence_players_<team>` | Number of moving players with valid directions used to calculate the team's movement coherence. |
 | `opponent_team_centroid_distance` | Euclidean distance in metres between the two team centroids. |
 | `opponent_team_closing_speed` | Rate of change of the inter-centroid distance in metres per second; positive means the teams are approaching, negative means they are separating. |
-| `team_ball_longitudinal_distance_<team>`, `team_ball_lateral_distance_<team>` | Ball position relative to the team's centroid along the team's attacking x direction and the positive y direction, respectively, in metres. Ball coordinates are converted from normalized pitch coordinates using the configured pitch dimensions. `<team>` is `barcelona` or `atletic_club`. |
+| `team_ball_longitudinal_distance_<team>`, `team_ball_lateral_distance_<team>` | Ball position relative to the team's centroid along the team's attacking x direction and the positive y direction, respectively, in metres. `<team>` is `barcelona` or `atletic_club`. |
+
+For radial movement and team-ball distances, normalized ball coordinates are converted
+to the player coordinate system using an affine fit of the available player normalized
+and metre coordinates for each axis. Each axis needs at least two finite pairs with
+distinct normalized values; otherwise the stage raises an error. Regenerate cached
+cleansing output to incorporate changes to these features.
 
 Attack-facing features use `period_direction_multipliers` in the ball- and
 team-focused parameters. It maps each `period_id` to `+1` or `-1`; the configured

@@ -48,18 +48,48 @@ def _ball_coordinates_in_metres(
     df: pd.DataFrame,
     ball_x_col: str,
     ball_y_col: str,
-    pitch_m: tuple[float, float],
 ) -> tuple[pd.Series, pd.Series]:
-    try:
-        pitch_length, pitch_width = (float(dimension) for dimension in pitch_m)
-    except (TypeError, ValueError):
-        raise ValueError("pitch_m must contain positive finite length and width") from None
-    if not np.isfinite([pitch_length, pitch_width]).all() or min(pitch_length, pitch_width) <= 0:
-        raise ValueError("pitch_m must contain positive finite length and width")
-
-    ball_x = pd.to_numeric(df[ball_x_col], errors="coerce") * pitch_length
-    ball_y = pd.to_numeric(df[ball_y_col], errors="coerce") * pitch_width
-    return ball_x, ball_y
+    converted = []
+    for axis, ball_col in (("x", ball_x_col), ("y", ball_y_col)):
+        suffix = f"_{axis}_m"
+        slots = [
+            column[:-len(suffix)]
+            for column in df.columns
+            if column.endswith(suffix)
+            and column[:-len(suffix)].isdigit()
+            and f"{column[:-len(suffix)]}_{axis}" in df.columns
+        ]
+        if not slots:
+            raise ValueError(
+                f"Cannot fit affine ball coordinate conversion for {axis}: "
+                "no player coordinate pairs."
+            )
+        normalized = np.concatenate([
+            pd.to_numeric(df[f"{slot}_{axis}"], errors="coerce").to_numpy(dtype=float)
+            for slot in slots
+        ])
+        metres = np.concatenate([
+            pd.to_numeric(df[f"{slot}_{axis}_m"], errors="coerce").to_numpy(dtype=float)
+            for slot in slots
+        ])
+        valid = np.isfinite(normalized) & np.isfinite(metres)
+        if valid.sum() < 2 or np.ptp(normalized[valid]) == 0:
+            raise ValueError(
+                f"Cannot fit affine ball coordinate conversion for {axis}: "
+                "insufficient distinct finite player coordinates."
+            )
+        coefficients, _, rank, _, _ = np.polyfit(
+            normalized[valid], metres[valid], 1, full=True
+        )
+        if rank < 2 or not np.isfinite(coefficients).all():
+            raise ValueError(
+                f"Cannot fit affine ball coordinate conversion for {axis}: "
+                "degenerate player coordinates."
+            )
+        converted.append(
+            pd.to_numeric(df[ball_col], errors="coerce") * coefficients[0] + coefficients[1]
+        )
+    return converted[0], converted[1]
 
 
 def team_centroids(feature_phased: pd.DataFrame) -> pd.DataFrame:
@@ -270,7 +300,6 @@ def team_average_radial_movement(
     fps = params.get("fps", 25.0)
     ball_x_col = params.get("ball_x_col", "ball_x")
     ball_y_col = params.get("ball_y_col", "ball_y")
-    pitch_m = params.get("pitch_m", (105.3, 68.0))
     """
     Feature set 4: Team average radial movement relative to the ball.
 
@@ -309,7 +338,7 @@ def team_average_radial_movement(
             f"Missing required columns for radial movement: {missing_columns}"
         )
     ball_x_m, ball_y_m = _ball_coordinates_in_metres(
-        df, ball_x_col, ball_y_col, pitch_m
+        df, ball_x_col, ball_y_col
     )
 
     # Identify players with matching X, Y and team columns.
@@ -690,7 +719,6 @@ def team_position_relative_to_ball(
     ball_x_col = params.get("ball_x_col", "ball_x")
     ball_y_col = params.get("ball_y_col", "ball_y")
     attack_directions = params.get("attack_directions")
-    pitch_m = params.get("pitch_m", (105.3, 68.0))
     """
     Feature set 8: Team positional relationship to ball.
 
@@ -729,7 +757,7 @@ def team_position_relative_to_ball(
             f"Missing required ball columns: {missing_columns}"
         )
     ball_x_m, ball_y_m = _ball_coordinates_in_metres(
-        df, ball_x_col, ball_y_col, pitch_m
+        df, ball_x_col, ball_y_col
     )
     direction_multiplier = period_direction_multipliers(df, params)
 

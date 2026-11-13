@@ -54,7 +54,6 @@ TEAM_FOCUSED_PARAMS = {
     "fps": 25,
     "ball_x_col": "ball_x",
     "ball_y_col": "ball_y",
-    "pitch_m": (105.3, 68.0),
     "period_direction_multipliers": {1: 1, 2: -1},
     "attack_directions": {
         "Barcelona": 1,
