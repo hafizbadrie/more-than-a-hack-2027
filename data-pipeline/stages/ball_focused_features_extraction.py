@@ -17,6 +17,8 @@ PARAMS = {
     "ball_x_col": "ball_x",
     "ball_y_col": "ball_y",
     "fps": 25,
+    "lag": 1,
+    "max_gap_frames": 1,
 
     # Feature 8: Attacking directions
     "team_a_attack_direction": 1,
@@ -27,7 +29,7 @@ PARAMS = {
 def extract_nearest_player_ball_distance(
     df: pd.DataFrame, params: dict = PARAMS
 ) -> pd.DataFrame:
-    """Add each team's nearest tracked player-to-ball distance per frame."""
+    """Add nearest player distances; leave the overall team missing for ties."""
     out = df.copy()
     distance_columns = [
         column
@@ -58,7 +60,7 @@ def extract_nearest_player_ball_distance(
 
     team_a_is_nearest = out["min_team_a_dist"].notna() & (
         out["min_team_b_dist"].isna()
-        | (out["min_team_a_dist"] <= out["min_team_b_dist"])
+        | (out["min_team_a_dist"] < out["min_team_b_dist"])
     )
     team_b_is_nearest = out["min_team_b_dist"].notna() & (
         out["min_team_a_dist"].isna()
@@ -183,18 +185,59 @@ def mask_unobserved_player_density(df: pd.DataFrame, params: dict = PARAMS) -> p
 
 
 
+def _motion_settings(params: dict) -> tuple[int, int, float]:
+    lag = params.get("lag", 1)
+    max_gap = params.get("max_gap_frames", 1)
+    fps = params["fps"]
+    for name, value in (("lag", lag), ("max_gap_frames", max_gap)):
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 1:
+            raise ValueError(f"{name} must be a positive integer.")
+    if not np.isfinite(fps) or fps <= 0:
+        raise ValueError("FPS must be greater than zero and finite.")
+    return lag, max_gap, fps
+
+
+def _centered_difference(
+    frames: pd.DataFrame, values: pd.DataFrame, frame_col: str, lag: int, max_gap: int
+) -> pd.DataFrame:
+    """Return endpoint differences, rejecting missing endpoints and excessive gaps."""
+    result = pd.DataFrame(np.nan, index=frames.index, columns=values.columns)
+    groups = (
+        frames.groupby("period_id", sort=False, dropna=False).indices.values()
+        if "period_id" in frames.columns else [np.arange(len(frames))]
+    )
+    for positions in groups:
+        frame_numbers = frames.iloc[positions][frame_col].to_numpy(dtype=float, na_value=np.nan)
+        data = values.iloc[positions].to_numpy(dtype=float, na_value=np.nan)
+        valid = np.isfinite(data).all(axis=1) & np.isfinite(frame_numbers)
+        observed_frames = frame_numbers[valid]
+        if not len(observed_frames):
+            continue
+        observed_data = data[valid]
+        centres = frame_numbers
+        left = np.searchsorted(observed_frames, centres - lag)
+        right = np.searchsorted(observed_frames, centres + lag)
+        in_bounds = (left < len(observed_frames)) & (right < len(observed_frames))
+        left_safe = np.minimum(left, len(observed_frames) - 1)
+        right_safe = np.minimum(right, len(observed_frames) - 1)
+        bad_gaps = np.r_[0, np.cumsum(np.diff(observed_frames) > max_gap)]
+        usable = (
+            valid & in_bounds
+            & (observed_frames[left_safe] == centres - lag)
+            & (observed_frames[right_safe] == centres + lag)
+            & (bad_gaps[right_safe] == bad_gaps[left_safe])
+        )
+        result.iloc[positions[usable]] = (
+            observed_data[right_safe[usable]] - observed_data[left_safe[usable]]
+        )
+    return result
+
+
 def extract_ball_speed(
     df: pd.DataFrame, params: dict = PARAMS
 ) -> pd.DataFrame:
     """
-    Feature 4: Calculate ball movement and speed between available observations.
-
-    Calculates ball displacement and average speed using consecutive
-    valid ball observations, based on their actual frame-number difference.
-
-    Missing frames or ball detections are not interpolated or estimated.
-    The previous valid observation is used when intermediate observations
-    have missing ball coordinates.
+    Feature 4: Calculate centred ball displacement and speed in metres.
 
     Calculates:
         ball_dx           : Horizontal displacement (m)
@@ -203,14 +246,9 @@ def extract_ball_speed(
         ball_speed_calc   : Average ball speed (m/s)
 
     Notes:
-        - Uses only observations where both ball coordinates are available.
-        - Uses the previous valid observation, not necessarily the
-          immediately preceding frame.
-        - Accounts for missing or skipped frames using actual elapsed time.
+        - Uses observations at t-lag and t+lag within the same period.
+        - Requires a current observation and no gap longer than max_gap_frames.
         - Converts normalized ball coordinates using player coordinate pairs.
-        - Does not interpolate missing coordinates or smooth ball movement.
-        - The first valid observation in each period has NaN displacement and speed.
-        - Preserves all existing columns and features.
     """
 
     out = df.copy()
@@ -218,11 +256,8 @@ def extract_ball_speed(
     frame_col = params["frame_col"]
     ball_x = params["ball_x_col"]
     ball_y = params["ball_y_col"]
-    fps = params["fps"]
+    lag, max_gap, fps = _motion_settings(params)
     frame_cols = (["period_id"] if "period_id" in out.columns else []) + [frame_col]
-
-    if fps <= 0:
-        raise ValueError("FPS must be greater than zero.")
 
     required_columns = [frame_col, ball_x, ball_y]
 
@@ -243,28 +278,19 @@ def extract_ball_speed(
     ball_positions["ball_x_m"] = ball_x_m
     ball_positions["ball_y_m"] = ball_y_m
 
-    # Keep only observations with both coordinates available
-    ball_positions = ball_positions.dropna(
-        subset=["ball_x_m", "ball_y_m"]
-    )
-
-    # One valid ball observation per frame
+    ball_positions[frame_col] = pd.to_numeric(ball_positions[frame_col], errors="raise")
+    ball_positions["_missing_ball"] = ball_positions[["ball_x_m", "ball_y_m"]].isna().any(axis=1)
     ball_positions = (
         ball_positions
+        .sort_values("_missing_ball", kind="stable")
         .drop_duplicates(subset=frame_cols, keep="first")
         .sort_values(frame_cols)
-        .copy()
+        .reset_index(drop=True)
     )
 
-    # Frame-to-frame displacement between consecutive valid observations
-    grouped = (
-        ball_positions.groupby("period_id", sort=False)
-        if "period_id" in frame_cols else None
-    )
-    differences = (
-        grouped[["ball_x_m", "ball_y_m", frame_col]].diff()
-        if grouped is not None
-        else ball_positions[["ball_x_m", "ball_y_m", frame_col]].diff()
+    differences = _centered_difference(
+        ball_positions[frame_cols], ball_positions[["ball_x_m", "ball_y_m"]],
+        frame_col, lag, max_gap,
     )
     ball_positions["ball_dx"] = differences["ball_x_m"]
     ball_positions["ball_dy"] = differences["ball_y_m"]
@@ -275,13 +301,7 @@ def extract_ball_speed(
         ball_positions["ball_dy"],
     )
 
-    # Actual elapsed time between valid observations
-    elapsed_time = differences[frame_col] / fps
-
-    # Average ball speed (m/s)
-    ball_positions["ball_speed_calc"] = (
-        ball_positions["ball_displacement"] / elapsed_time
-    ).where(elapsed_time > 0)
+    ball_positions["ball_speed_calc"] = ball_positions["ball_displacement"] * fps / (2 * lag)
 
     # Select extracted features
     result = ball_positions[
@@ -316,32 +336,14 @@ def extract_ball_acceleration(
     df: pd.DataFrame, params: dict = PARAMS
 ) -> pd.DataFrame:
     """
-    Feature 5: Calculate ball acceleration from consecutive valid speed
-    observations.
-
-    Acceleration is calculated from the change in average ball speed
-    divided by the actual elapsed time between observations.
-
-    Calculates:
-        ball_acceleration : Change in ball speed over time (m/s²)
-
-    Notes:
-        - Requires ball_speed_calc from extract_ball_speed().
-        - Uses actual frame-number differences to calculate elapsed time.
-        - Uses only available valid speed observations.
-        - Does not interpolate missing ball positions or speeds.
-        - The first valid speed observation in each period has NaN acceleration.
-        - Preserves all existing columns and features.
+    Feature 5: Centred rate of change of ball speed (m/s²).
     """
 
     out = df.copy()
 
     frame_col = params["frame_col"]
-    fps = params["fps"]
+    lag, max_gap, fps = _motion_settings(params)
     frame_cols = (["period_id"] if "period_id" in out.columns else []) + [frame_col]
-
-    if fps <= 0:
-        raise ValueError("FPS must be greater than zero.")
 
     required_columns = [frame_col, "ball_speed_calc"]
 
@@ -356,28 +358,17 @@ def extract_ball_acceleration(
             f"{missing_columns}. Run extract_ball_speed() first."
         )
 
-    # Extract valid speed observations
     speed_data = (
         out[frame_cols + ["ball_speed_calc"]]
-        .dropna(subset=["ball_speed_calc"])
         .drop_duplicates(subset=frame_cols, keep="first")
         .sort_values(frame_cols)
-        .copy()
+        .reset_index(drop=True)
     )
 
-    # Calculate actual elapsed time between speed observations
-    differences = (
-        speed_data.groupby("period_id", sort=False)[[frame_col, "ball_speed_calc"]].diff()
-        if "period_id" in frame_cols
-        else speed_data[[frame_col, "ball_speed_calc"]].diff()
+    differences = _centered_difference(
+        speed_data[frame_cols], speed_data[["ball_speed_calc"]], frame_col, lag, max_gap
     )
-    elapsed_time = differences[frame_col] / fps
-    speed_change = differences["ball_speed_calc"]
-
-    # Calculate acceleration (m/s²)
-    speed_data["ball_acceleration"] = (
-        speed_change / elapsed_time
-    ).where(elapsed_time > 0)
+    speed_data["ball_acceleration"] = differences["ball_speed_calc"] * fps / (2 * lag)
 
     # Keep extracted feature
     result = speed_data[
@@ -385,7 +376,7 @@ def extract_ball_acceleration(
     ]
 
     # Merge into original dataframe
-    out = out.merge(
+    out = out.drop(columns=["ball_acceleration"], errors="ignore").merge(
         result,
         on=frame_cols,
         how="left",
@@ -402,27 +393,23 @@ def extract_ball_direction_change(
     """
     Feature 6: Calculate ball movement direction and trajectory changes.
 
-    Direction is calculated from consecutive valid ball displacement
-    vectors using their horizontal and vertical components.
+    Direction change compares the movement directions at t-lag and t+lag.
 
     Calculates:
         ball_direction_deg:
             Ball movement direction relative to the positive X-axis (degrees).
 
         ball_direction_change_deg:
-            Signed angular change between consecutive movement vectors
+            Signed angular change between the endpoint movement vectors
             (degrees, range -180 to +180).
 
         ball_direction_change_abs_deg:
-            Absolute angular change between consecutive movement vectors
+            Absolute angular change between the endpoint movement vectors
             (degrees, range 0 to 180).
 
     Notes:
         - Requires ball_dx and ball_dy from extract_ball_speed().
-        - Uses only available valid movement observations.
-        - Missing ball positions are not interpolated.
-        - A direction change requires two consecutive valid movement vectors.
-        - The first valid movement vector in each period has NaN direction change.
+        - Requires an observed current direction and limits intervening gaps.
         - Zero-displacement observations have undefined direction.
         - Preserves all existing columns and features.
     """
@@ -430,6 +417,7 @@ def extract_ball_direction_change(
     out = df.copy()
 
     frame_col = params["frame_col"]
+    lag, max_gap, _ = _motion_settings(params)
     frame_cols = (["period_id"] if "period_id" in out.columns else []) + [frame_col]
 
     required_columns = [
@@ -449,13 +437,11 @@ def extract_ball_direction_change(
             f"{missing_columns}. Run extract_ball_speed() first."
         )
 
-    # Extract valid movement observations
     movement = (
         out[frame_cols + ["ball_dx", "ball_dy"]]
-        .dropna(subset=["ball_dx", "ball_dy"])
         .drop_duplicates(subset=frame_cols, keep="first")
         .sort_values(frame_cols)
-        .copy()
+        .reset_index(drop=True)
     )
 
     # Calculate movement direction relative to positive X-axis
@@ -476,49 +462,13 @@ def extract_ball_direction_change(
         zero_movement, "ball_direction_deg"
     ] = np.nan
 
-    # Convert movement vectors into radians
-    previous = (
-        movement.groupby("period_id", sort=False)[["ball_dx", "ball_dy"]].shift(1)
-        if "period_id" in frame_cols
-        else movement[["ball_dx", "ball_dy"]].shift(1)
+    changes = _centered_difference(
+        movement[frame_cols], movement[["ball_direction_deg"]], frame_col, lag, max_gap
     )
-    dx_previous = previous["ball_dx"]
-    dy_previous = previous["ball_dy"]
-
-    dx_current = movement["ball_dx"]
-    dy_current = movement["ball_dy"]
-
-    # Calculate signed angular change using cross and dot products
-    cross_product = (
-        dx_previous * dy_current
-        - dy_previous * dx_current
-    )
-
-    dot_product = (
-        dx_previous * dx_current
-        + dy_previous * dy_current
-    )
-
+    angle_delta = np.radians(changes["ball_direction_deg"])
     movement["ball_direction_change_deg"] = np.degrees(
-        np.arctan2(cross_product, dot_product)
+        np.arctan2(np.sin(angle_delta), np.cos(angle_delta))
     )
-
-    # Exclude direction changes when either movement vector is invalid
-    previous_valid = (
-        dx_previous.notna()
-        & dy_previous.notna()
-        & ~(
-            dx_previous.eq(0)
-            & dy_previous.eq(0)
-        )
-    )
-
-    current_valid = ~zero_movement
-
-    movement.loc[
-        ~(previous_valid & current_valid),
-        "ball_direction_change_deg",
-    ] = np.nan
 
     # Absolute direction change
     movement["ball_direction_change_abs_deg"] = (
@@ -535,7 +485,9 @@ def extract_ball_direction_change(
     ]
 
     # Merge into original dataframe
-    out = out.merge(
+    out = out.drop(columns=[
+        "ball_direction_deg", "ball_direction_change_deg", "ball_direction_change_abs_deg"
+    ], errors="ignore").merge(
         result,
         on=frame_cols,
         how="left",
@@ -552,8 +504,7 @@ def extract_nearest_player_ball_relative_velocity(
     """
     Feature 7: Calculate the relative velocity between each player and the ball.
 
-    Calculates the rate of change in player-to-ball distance using
-    consecutive available observations.
+    Calculates the centred rate of change in player-to-ball distance.
 
     Positive value:
         Player is approaching the ball.
@@ -572,9 +523,10 @@ def extract_nearest_player_ball_relative_velocity(
 
     Notes:
         - Reuses existing player-to-ball distance columns.
-        - Uses actual elapsed time between available observations.
+        - Requires distances at t-lag, t and t+lag and limits intervening gaps.
         - Calculates changes independently within each period when available.
         - Selects the relative velocity of the nearest player in each team.
+        - Leaves the overall team and velocity missing for ties between teams.
         - Does not interpolate missing distances.
         - Does not estimate player possession.
         - Preserves all existing columns and features.
@@ -583,14 +535,11 @@ def extract_nearest_player_ball_relative_velocity(
     out = df.copy()
 
     frame_col = params["frame_col"]
-    fps = params["fps"]
+    lag, max_gap, fps = _motion_settings(params)
     frame_cols = (["period_id"] if "period_id" in out.columns else []) + [frame_col]
 
     distance_suffix = params["distance_suffix"]
     team_suffix = params["team_suffix"]
-
-    if fps <= 0:
-        raise ValueError("FPS must be greater than zero.")
 
     required_columns = [frame_col]
 
@@ -660,23 +609,14 @@ def extract_nearest_player_ball_relative_velocity(
             .reindex(frame_index)
         )
 
-        # Calculate relative velocity between consecutive valid observations
-        valid_distance = player_distance.dropna()
-
-        valid_frames = pd.Series(
-            valid_distance.index.get_level_values(frame_col), index=valid_distance.index
+        distance_change = _centered_difference(
+            frame_data[frame_cols],
+            player_distance.reset_index(drop=True).to_frame(),
+            frame_col, lag, max_gap,
+        ).iloc[:, 0]
+        relative_velocity = pd.Series(
+            (-distance_change * fps / (2 * lag)).to_numpy(), index=frame_index
         )
-        if "period_id" in frame_cols:
-            elapsed_time = valid_frames.groupby(level="period_id", sort=False).diff() / fps
-            distance_change = valid_distance.groupby(level="period_id", sort=False).diff()
-        else:
-            elapsed_time = valid_frames.diff() / fps
-            distance_change = valid_distance.diff()
-
-        valid_relative_velocity = (-distance_change / elapsed_time).where(elapsed_time > 0)
-
-        # Restore original frame index, keeping missing observations as NaN
-        relative_velocity = valid_relative_velocity.reindex(frame_index)
 
         distance_data[distance_column] = player_distance
         velocity_data[distance_column] = relative_velocity
@@ -761,7 +701,7 @@ def extract_nearest_player_ball_relative_velocity(
         team_a_dist.notna()
         & (
             team_b_dist.isna()
-            | (team_a_dist <= team_b_dist)
+            | (team_a_dist < team_b_dist)
         )
     )
 
@@ -805,7 +745,12 @@ def extract_nearest_player_ball_relative_velocity(
     # Merge extracted features back into original dataframe
     result = frame_data.reset_index(drop=True)
 
-    out = out.merge(
+    out = out.drop(columns=[
+        "team_a_nearest_player_ball_relative_velocity",
+        "team_b_nearest_player_ball_relative_velocity",
+        "nearest_player_ball_relative_velocity",
+        "nearest_player_ball_relative_velocity_team",
+    ], errors="ignore").merge(
         result,
         on=frame_cols,
         how="left",

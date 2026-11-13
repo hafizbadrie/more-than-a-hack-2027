@@ -9,7 +9,7 @@ raw_tactical ──ingest──▶ clean ──▶ ball, tag and team features �
                                       ▲
                              smart tags + parameters
 
-without_hmm.csv ──▶ HMM ──▶ hybrid possession ──▶ hybrid_results.csv
+tactical_processed.csv ──▶ HMM ──▶ hybrid possession ──▶ hybrid_results.csv
 ```
 
 | Stage | File | Purpose |
@@ -45,14 +45,13 @@ python data-pipeline/main.py --pipeline hmm
 
 The default (`--pipeline all`) runs both branches. Cleansing reads the tactical and
 smart-tag CSVs and writes `output/tactical_processed.csv`. HMM reads the existing
-`output/without_hmm.csv` cache and writes `output/hybrid_results.csv` and the HMM
+`output/tactical_processed.csv` cache and writes `output/hybrid_results.csv` and the HMM
 diagnostic reports. It does not write a separate HMM prediction CSV. These outputs
 are overwritten when their respective pipeline runs.
 
-The cache is deliberately separate from the cleansing output: neither cleansing nor
-`--pipeline all` updates `without_hmm.csv`. To run HMM on freshly generated features,
-after saving any cache you wish to keep, explicitly copy `tactical_processed.csv` to
-`without_hmm.csv`, then run `--pipeline hmm`. This can change the HMM baseline.
+Run cleansing or `--pipeline all` to regenerate the feature cache before an HMM-only
+run; save any existing output you wish to keep first. Regeneration can change the
+HMM baseline.
 
 The player-density extractor now writes missing values when a team has no observed
 player-ball distances, instead of treating missing distances as zero players. Existing
@@ -62,6 +61,27 @@ existing cached-data baseline. On this match the corrected-data fit substantiall
 the HMM states and degraded its public-window score, so it remains opt-in pending further
 validation. Regenerating the feature cache using the extraction stages will also incorporate
 the corrected values and change the baseline.
+
+### Ball motion windows
+
+`BALL_FOCUSED_PARAMS` in [main.py](main.py) sets `lag` and `max_gap_frames` (both
+default to 1). Ball displacement uses positions at video frames `t-lag` and
+`t+lag`; speed is displacement times `fps / (2 * lag)`. Acceleration and
+player-to-ball relative velocity use the same centred difference on speed and
+distance, respectively. Direction change is the signed angle between movement
+directions at those endpoints, not an angular rate.
+
+The current observation and both exact endpoint observations must exist in the
+same period. No consecutive valid observations in the window may be more than
+`max_gap_frames` frame IDs apart. Thus 1 permits no missing frames, and 2 permits
+a single missing frame; missing endpoints are never filled. Acceleration and
+direction change apply the same rule to the derived speed and direction values,
+so their effective position windows are wider. Results near gaps and period
+boundaries can be NaN. Set `lag` to 6 to experiment with a wider window; the
+appropriate value and gap limit depend on the data and must be validated.
+These centred features use future frames and are not suitable for real-time use.
+Regenerate the cleansing output as described above to apply these changes to the HMM
+cache; this can change the HMM baseline.
 
 ## HMM possession stage
 
@@ -117,7 +137,7 @@ in [main.py](main.py), changing one at a time and saving the previous outputs fi
 | `features` | `FEATURES` | A unique list of selected names from `FEATURES`, including `min_team_a_dist` and `min_team_b_dist`. For a geometry ablation, start with those two, then add density or tag features. |
 | `min_feature_coverage` | `0.0` | Drop selected features whose observed-frame fraction is below this value, between 0 and 1. The stage fails if an anchor distance is dropped. A fully unobserved feature is always dropped. |
 | `training_missing` | `"mean"` | `"complete"` fits EM only on frames with all retained features observed, breaking training sequences around excluded frames. Decoding still marginalizes missing dimensions. This is complete-case training, **not** missing-data EM, and can introduce selection bias or leave too few training/anchor frames. |
-| `dead_anchor_max_displacement` | unset | Require observed `ball_displacement` at or below this nonnegative threshold in metres for set-piece dead anchors. It uses the previous valid ball observation, which can be several frames earlier. Missing displacement never qualifies. Choose a threshold based on tracking diagnostics, not the public score. |
+| `dead_anchor_max_displacement` | unset | Require observed `ball_displacement` at or below this nonnegative threshold in metres for set-piece dead anchors. Its window depends on how the input cache was generated; see Ball motion windows above. Missing displacement never qualifies. Choose a threshold based on tracking diagnostics, not the public score. |
 | `dead_anchor_max_since` | unset | Also require observed `sp_since` between zero and this many seconds. Set-piece timestamps are approximate. These anchor filters are heuristic, not verified dead-ball labels. |
 | `state_mapping` | `"anchors"` | `"distance"` assigns D to the state nearest the dead anchor, then H/A by learned team-distance advantage. This may select the wrong dead state; inspect the state diagnostics. |
 | `freeze_transitions` | `False` | `True` prevents EM from changing the initial transition matrix, allowing controlled tests of persistence. |
@@ -246,6 +266,10 @@ no observations.
 | Same slots as `<slot>_x`: `<slot>_y` | Tracked object's y position, normalised to the pitch (0–1). |
 | Same slots as `<slot>_x`: `<slot>_s` | Tracked object's speed in metres per second. |
 
+Kloppy's `<slot>_d` field is distance, not movement direction. It is empty for every
+slot in this match and is removed by the clean stage. Speed alone cannot provide a
+movement vector, so radial movement and coherence use position differences for direction.
+
 ### Player-slot enrichment columns
 
 | Columns | Definition |
@@ -267,14 +291,14 @@ no observations.
 | `possession_advantage` | `min_team_b_dist - min_team_a_dist` in metres; positive means Team A is closer, negative means Team B is closer. This is a distance comparison, not a possession label. |
 | `team_a_players_1m`, `team_a_players_2m`, `team_a_players_5m` | Number of Team A players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
 | `team_b_players_1m`, `team_b_players_2m`, `team_b_players_5m` | Number of Team B players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
-| `ball_dx`, `ball_dy` | Ball x and y displacement in metres since the preceding valid ball observation. |
-| `ball_displacement` | Euclidean displacement in metres between valid observations. |
+| `ball_dx`, `ball_dy` | Ball x and y displacement in metres between the centred window endpoints. |
+| `ball_displacement` | Euclidean displacement in metres between the centred window endpoints. |
 | `ball_speed` | Original dataset ball speed in metres per second, when supplied. |
-| `ball_speed_calc` | Calculated average ball speed in metres per second between valid observations, using elapsed frame time. |
+| `ball_speed_calc` | Calculated ball speed in metres per second across the centred window. |
 | `ball_acceleration` | Change in calculated ball speed per second, in metres per second squared. |
 | `ball_direction_deg` | Ball movement direction in degrees calculated from metre-coordinate differences (`atan2(ball_dy, ball_dx)`). |
-| `ball_direction_change_deg` | Signed angular change in direction from the preceding valid movement vector, in degrees (−180 to 180). |
-| `ball_direction_change_abs_deg` | Absolute angular change from the preceding valid movement vector, in degrees (0 to 180). |
+| `ball_direction_change_deg` | Signed angular change between centred endpoint movement vectors, in degrees (−180 to 180). |
+| `ball_direction_change_abs_deg` | Absolute angular change between centred endpoint movement vectors, in degrees (0 to 180). |
 | `team_a_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team A player's ball distance, in metres per second; positive means approaching the ball. |
 | `team_b_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team B player's ball distance, in metres per second; positive means approaching the ball. |
 | `nearest_player_ball_relative_velocity` | Relative velocity for the nearest player on either team, in metres per second; positive means approaching the ball. |

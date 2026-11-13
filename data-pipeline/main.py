@@ -47,6 +47,8 @@ BALL_FOCUSED_PARAMS = {
     "ball_x_col": "ball_x",
     "ball_y_col": "ball_y",
     "fps": 25,
+    "lag": 1,
+    "max_gap_frames": 1,
 }
 TEAM_FOCUSED_PARAMS = {
     "fps": 25,
