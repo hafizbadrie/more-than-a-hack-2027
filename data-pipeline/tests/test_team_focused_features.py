@@ -14,6 +14,7 @@ from stages.ball_focused_features_extraction import (
     extract_ball_direction_change,
     extract_ball_speed,
     extract_ball_trajectory_toward_goal,
+    extract_nearest_player_ball_relative_velocity,
 )
 from stages.direction import infer_attack_directions
 
@@ -147,6 +148,85 @@ class BallCoordinateUnitTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(ValueError, "affine.*x"):
             extract_ball_speed(source)
+
+    def test_ball_motion_resets_at_period_boundaries(self):
+        source = pd.DataFrame({
+            "period_id": [1] * 4 + [2] * 5,
+            "video_frame": [0, 1, 2, 3, 0, 1, 2, 3, 4],
+            "ball_x": [0.1, 0.2, 0.4, 0.4, float("nan"), 0.8, 0.7, 0.5, 0.5],
+            "ball_y": [0.1, 0.1, 0.1, 0.2, float("nan"), 0.8, 0.8, 0.8, 0.7],
+            "1_x": [0.0, 1.0] + [0.0] * 7,
+            "1_y": [0.0, 1.0] + [0.0] * 7,
+            "1_x_m": [0.0, 10.0] + [0.0] * 7,
+            "1_y_m": [0.0, 10.0] + [0.0] * 7,
+        })
+        params = {"frame_col": "video_frame", "ball_x_col": "ball_x",
+                  "ball_y_col": "ball_y", "fps": 1}
+
+        speed = extract_ball_speed(source, params)
+        acceleration = extract_ball_acceleration(speed, params)
+        result = extract_ball_direction_change(acceleration, params)
+
+        for row in (0, 4, 5):
+            for column in ("ball_dx", "ball_dy", "ball_displacement", "ball_speed_calc",
+                           "ball_acceleration", "ball_direction_deg",
+                           "ball_direction_change_deg", "ball_direction_change_abs_deg"):
+                with self.subTest(row=row, column=column):
+                    self.assertTrue(pd.isna(result.loc[row, column]))
+        for row in (1, 6):
+            self.assertTrue(pd.isna(result.loc[row, "ball_acceleration"]))
+            self.assertTrue(pd.isna(result.loc[row, "ball_direction_change_deg"]))
+        self.assertAlmostEqual(result.loc[2, "ball_acceleration"], 1.0)
+        self.assertAlmostEqual(result.loc[7, "ball_acceleration"], 1.0)
+        self.assertAlmostEqual(result.loc[3, "ball_direction_change_deg"], 90.0)
+        self.assertAlmostEqual(result.loc[8, "ball_direction_change_deg"], 90.0)
+
+    def test_acceleration_and_direction_reset_with_precomputed_motion(self):
+        source = pd.DataFrame({
+            "period_id": [1, 1, 2, 2, 2],
+            "video_frame": [0, 1, 10, 11, 12],
+            "ball_speed_calc": [1.0, 2.0, float("nan"), 4.0, 5.0],
+            "ball_dx": [1.0, 1.0, float("nan"), 0.0, -1.0],
+            "ball_dy": [0.0, 0.0, float("nan"), 1.0, 0.0],
+        })
+        params = {"frame_col": "video_frame", "fps": 1}
+
+        result = extract_ball_direction_change(extract_ball_acceleration(source, params), params)
+
+        self.assertTrue(pd.isna(result.loc[3, "ball_acceleration"]))
+        self.assertTrue(pd.isna(result.loc[3, "ball_direction_change_deg"]))
+        self.assertAlmostEqual(result.loc[4, "ball_acceleration"], 1.0)
+        self.assertAlmostEqual(result.loc[4, "ball_direction_change_deg"], 90.0)
+
+    def test_ball_relative_velocity_resets_at_period_boundaries(self):
+        source = pd.DataFrame({
+            "period_id": [1, 1, 2, 2, 2],
+            "video_frame": [0, 2, 0, 1, 3],
+            "1_ball_dist_m": [5.0, 3.0, float("nan"), 8.0, 6.0],
+            "1_team": ["Barcelona"] * 5,
+            "2_ball_dist_m": [8.0, 6.0, float("nan"), 4.0, 2.0],
+            "2_team": ["Atletic Club"] * 5,
+        })
+        params = {"frame_col": "video_frame", "fps": 1,
+                  "distance_suffix": "_ball_dist_m", "team_suffix": "_team",
+                  "team_a": "Barcelona", "team_b": "Atletic Club"}
+
+        result = extract_nearest_player_ball_relative_velocity(source, params)
+
+        for column in ("team_a_nearest_player_ball_relative_velocity",
+                       "team_b_nearest_player_ball_relative_velocity",
+                       "nearest_player_ball_relative_velocity"):
+            for row in (0, 2, 3):
+                with self.subTest(column=column, row=row):
+                    self.assertTrue(pd.isna(result.loc[row, column]))
+            self.assertAlmostEqual(result.loc[1, column], 1.0)
+            self.assertAlmostEqual(result.loc[4, column], 1.0)
+
+        without_period = extract_nearest_player_ball_relative_velocity(
+            source.iloc[:2].drop(columns="period_id"), params
+        )
+        self.assertTrue(pd.isna(without_period.loc[0, "nearest_player_ball_relative_velocity"]))
+        self.assertAlmostEqual(without_period.loc[1, "nearest_player_ball_relative_velocity"], 1.0)
 
     def test_radial_movement_uses_ball_coordinates_in_metres(self):
         source = pd.DataFrame({

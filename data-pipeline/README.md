@@ -286,11 +286,14 @@ no observations.
 | `ball_moving_toward_team_b_goal` | Whether the ball is moving toward Team B's configured goal (`True`/1); missing when velocity is unavailable. |
 
 Ball motion features use available valid observations only; missing coordinates are not interpolated.
-The first observation or motion interval without a previous valid observation has undefined (NaN)
-motion values. Ball coordinates are converted to metres using the affine mapping fitted from
-normalized and metre-valued player coordinate pairs. The HMM uses `ball_speed_calc`, not the
+Differences are calculated within each `period_id` when available, including player-to-ball
+relative velocity. The first valid observation or motion interval in each period without a previous
+valid observation has undefined (NaN) motion values. Ball coordinates are converted to metres
+using the affine mapping fitted from normalized and metre-valued player coordinate pairs.
+The HMM uses `ball_speed_calc`, not the
 original `ball_speed`. Rebuild older feature caches with `--pipeline cleansing` or `--pipeline all`
-before running `--pipeline hmm`; earlier caches have different motion units and lack `ball_speed_calc`.
+before running `--pipeline hmm` to apply the period-boundary fix; earlier caches may also have
+different motion units and lack `ball_speed_calc`.
 
 ### Smart-tag and match-phase columns
 
