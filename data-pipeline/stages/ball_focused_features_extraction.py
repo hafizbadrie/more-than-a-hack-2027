@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 from stages.direction import period_direction_multipliers
+from stages.team_focused_features_extraction import _ball_coordinates_in_metres
 
 PARAMS = {
     "team_a": "Barcelona",
@@ -199,13 +200,14 @@ def extract_ball_speed(
         ball_dx           : Horizontal displacement (m)
         ball_dy           : Vertical displacement (m)
         ball_displacement : Euclidean displacement (m)
-        ball_speed        : Average ball speed (m/s)
+        ball_speed_calc   : Average ball speed (m/s)
 
     Notes:
         - Uses only observations where both ball coordinates are available.
         - Uses the previous valid observation, not necessarily the
           immediately preceding frame.
         - Accounts for missing or skipped frames using actual elapsed time.
+        - Converts normalized ball coordinates using player coordinate pairs.
         - Does not interpolate missing coordinates or smooth ball movement.
         - The first valid observation has NaN displacement and speed.
         - Preserves all existing columns and features.
@@ -235,22 +237,16 @@ def extract_ball_speed(
 
     # Extract ball coordinates from the original dataframe.
     # Keep the first valid X/Y coordinate pair for each frame.
-    ball_positions = (
-        out[[frame_col, ball_x, ball_y]]
-        .copy()
-    )
-
-    ball_positions[ball_x] = pd.to_numeric(
-        ball_positions[ball_x], errors="coerce"
-    )
-
-    ball_positions[ball_y] = pd.to_numeric(
-        ball_positions[ball_y], errors="coerce"
-    )
+    ball_x_m, ball_y_m = _ball_coordinates_in_metres(out, ball_x, ball_y)
+    ball_positions = pd.DataFrame({
+        frame_col: out[frame_col],
+        "ball_x_m": ball_x_m,
+        "ball_y_m": ball_y_m,
+    })
 
     # Keep only observations with both coordinates available
     ball_positions = ball_positions.dropna(
-        subset=[ball_x, ball_y]
+        subset=["ball_x_m", "ball_y_m"]
     )
 
     # One valid ball observation per frame
@@ -263,11 +259,11 @@ def extract_ball_speed(
 
     # Frame-to-frame displacement between consecutive valid observations
     ball_positions["ball_dx"] = (
-        ball_positions[ball_x].diff()
+        ball_positions["ball_x_m"].diff()
     )
 
     ball_positions["ball_dy"] = (
-        ball_positions[ball_y].diff()
+        ball_positions["ball_y_m"].diff()
     )
 
     # Euclidean displacement
@@ -282,7 +278,7 @@ def extract_ball_speed(
     )
 
     # Average ball speed (m/s)
-    ball_positions["ball_speed"] = (
+    ball_positions["ball_speed_calc"] = (
         ball_positions["ball_displacement"] / elapsed_time
     ).where(elapsed_time > 0)
 
@@ -293,7 +289,7 @@ def extract_ball_speed(
             "ball_dx",
             "ball_dy",
             "ball_displacement",
-            "ball_speed",
+            "ball_speed_calc",
         ]
     ]
 
@@ -330,7 +326,7 @@ def extract_ball_acceleration(
         ball_acceleration : Change in ball speed over time (m/s²)
 
     Notes:
-        - Requires ball_speed from extract_ball_speed().
+        - Requires ball_speed_calc from extract_ball_speed().
         - Uses actual frame-number differences to calculate elapsed time.
         - Uses only available valid speed observations.
         - Does not interpolate missing ball positions or speeds.
@@ -346,7 +342,7 @@ def extract_ball_acceleration(
     if fps <= 0:
         raise ValueError("FPS must be greater than zero.")
 
-    required_columns = [frame_col, "ball_speed"]
+    required_columns = [frame_col, "ball_speed_calc"]
 
     missing_columns = [
         col for col in required_columns
@@ -361,8 +357,8 @@ def extract_ball_acceleration(
 
     # Extract valid speed observations
     speed_data = (
-        out[[frame_col, "ball_speed"]]
-        .dropna(subset=["ball_speed"])
+        out[[frame_col, "ball_speed_calc"]]
+        .dropna(subset=["ball_speed_calc"])
         .drop_duplicates(subset=[frame_col], keep="first")
         .sort_values(frame_col)
         .copy()
@@ -372,7 +368,7 @@ def extract_ball_acceleration(
     elapsed_time = speed_data[frame_col].diff() / fps
 
     # Calculate change in speed
-    speed_change = speed_data["ball_speed"].diff()
+    speed_change = speed_data["ball_speed_calc"].diff()
 
     # Calculate acceleration (m/s²)
     speed_data["ball_acceleration"] = (
@@ -836,7 +832,7 @@ def extract_ball_trajectory_toward_goal(
             Whether the ball is moving toward Team B's attacking goal.
 
     Notes:
-        - Requires ball_dx, ball_displacement and ball_speed.
+        - Requires ball_dx, ball_displacement and ball_speed_calc.
         - Uses the actual average ball speed between valid observations.
         - Does not assume the nearest player is the possession team.
         - Calculates both teams' attacking perspectives independently.
@@ -850,7 +846,7 @@ def extract_ball_trajectory_toward_goal(
     required_columns = [
         "ball_dx",
         "ball_displacement",
-        "ball_speed",
+        "ball_speed_calc",
     ]
 
     missing_columns = [
@@ -887,10 +883,10 @@ def extract_ball_trajectory_toward_goal(
     direction_multiplier = period_direction_multipliers(out, params)
 
     # Calculate horizontal ball velocity.
-    # ball_speed contains the magnitude of the velocity.
+    # ball_speed_calc contains the magnitude of the velocity.
     # ball_dx / ball_displacement provides its horizontal direction.
     out["ball_velocity_x"] = (
-        out["ball_speed"]
+        out["ball_speed_calc"]
         * out["ball_dx"]
         / out["ball_displacement"].where(
             out["ball_displacement"] > 0

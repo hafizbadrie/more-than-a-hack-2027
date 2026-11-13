@@ -13,7 +13,7 @@ from kedro_datasets.pandas import CSVDataset
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main as pipeline_main
 from hmm_pipeline import prepare_cached_density
-from stages.hmm_possession import FEATURES
+from stages.hmm_possession import FEATURES, add_hmm_possession
 
 
 class PipelineTests(unittest.TestCase):
@@ -62,6 +62,7 @@ class PipelineTests(unittest.TestCase):
                 pipeline_main.REPO / "data/tactical/BAR-ATH_tactical_sample.csv",
                 nrows=100,
             )
+            sample["ball_speed"] = np.arange(len(sample), dtype=float)
             tags = pd.read_csv(
                 pipeline_main.REPO / "data/tactical/BAR-ATH_tactical_smart_tagging_sample.csv"
             )
@@ -79,7 +80,20 @@ class PipelineTests(unittest.TestCase):
             result = pd.read_csv(output)
             self.assertEqual(len(result), len(sample))
             self.assertIn("min_team_a_dist", result.columns)
+            self.assertIn("ball_speed_calc", result.columns)
+            pd.testing.assert_series_equal(result["ball_speed"], sample["ball_speed"])
             self.assertFalse((Path(directory) / "missing.csv").exists())
+
+    def test_hmm_requires_calculated_speed_instead_of_source_speed(self):
+        frame = pd.DataFrame({feature: [0.0] for feature in FEATURES})
+        frame["period_id"] = 1
+        frame["video_frame"] = 0
+        frame["sp_kind"] = None
+        frame["ball_speed"] = 1.0
+        self.assertIn("ball_speed_calc", FEATURES)
+        self.assertNotIn("ball_speed", FEATURES)
+        with self.assertRaisesRegex(ValueError, "ball_speed_calc"):
+            add_hmm_possession(frame.drop(columns="ball_speed_calc"), {})
 
     def test_hmm_runs_from_cache_without_raw_data(self):
         rng = np.random.default_rng(42)

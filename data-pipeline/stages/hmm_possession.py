@@ -23,7 +23,7 @@ FEATURES = (
     "ball_dx",
     "ball_dy",
     "ball_displacement",
-    "ball_speed",
+    "ball_speed_calc",
     "ball_acceleration",
     "ball_direction_deg",
     "ball_direction_change_deg",

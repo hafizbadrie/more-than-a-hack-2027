@@ -117,7 +117,7 @@ in [main.py](main.py), changing one at a time and saving the previous outputs fi
 | `features` | `FEATURES` | A unique list of selected names from `FEATURES`, including `min_team_a_dist` and `min_team_b_dist`. For a geometry ablation, start with those two, then add density or tag features. |
 | `min_feature_coverage` | `0.0` | Drop selected features whose observed-frame fraction is below this value, between 0 and 1. The stage fails if an anchor distance is dropped. A fully unobserved feature is always dropped. |
 | `training_missing` | `"mean"` | `"complete"` fits EM only on frames with all retained features observed, breaking training sequences around excluded frames. Decoding still marginalizes missing dimensions. This is complete-case training, **not** missing-data EM, and can introduce selection bias or leave too few training/anchor frames. |
-| `dead_anchor_max_displacement` | unset | Require observed `ball_displacement` at or below this nonnegative threshold for set-piece dead anchors. It is measured in normalized coordinates, not metres, and uses the previous valid ball observation, which can be several frames earlier. Missing displacement never qualifies. Choose a threshold based on tracking diagnostics, not the public score. |
+| `dead_anchor_max_displacement` | unset | Require observed `ball_displacement` at or below this nonnegative threshold in metres for set-piece dead anchors. It uses the previous valid ball observation, which can be several frames earlier. Missing displacement never qualifies. Choose a threshold based on tracking diagnostics, not the public score. |
 | `dead_anchor_max_since` | unset | Also require observed `sp_since` between zero and this many seconds. Set-piece timestamps are approximate. These anchor filters are heuristic, not verified dead-ball labels. |
 | `state_mapping` | `"anchors"` | `"distance"` assigns D to the state nearest the dead anchor, then H/A by learned team-distance advantage. This may select the wrong dead state; inspect the state diagnostics. |
 | `freeze_transitions` | `False` | `True` prevents EM from changing the initial transition matrix, allowing controlled tests of persistence. |
@@ -267,18 +267,19 @@ no observations.
 | `possession_advantage` | `min_team_b_dist - min_team_a_dist` in metres; positive means Team A is closer, negative means Team B is closer. This is a distance comparison, not a possession label. |
 | `team_a_players_1m`, `team_a_players_2m`, `team_a_players_5m` | Number of Team A players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
 | `team_b_players_1m`, `team_b_players_2m`, `team_b_players_5m` | Number of Team B players within (or exactly at) 1, 2, or 5 metres of the ball, respectively. |
-| `ball_dx`, `ball_dy` | Ball x and y displacement in normalized pitch coordinates since the preceding valid ball observation. |
-| `ball_displacement` | Euclidean displacement in normalized coordinates between valid observations; the two axes have different physical scales. |
-| `ball_speed` | Normalized-coordinate displacement per second between valid observations, using elapsed frame time; not metres per second. |
-| `ball_acceleration` | Change in normalized-coordinate speed per second, not metres per second squared. |
-| `ball_direction_deg` | Ball movement direction calculated from normalized coordinate differences (`atan2(ball_dy, ball_dx)`), not a physical pitch angle. |
+| `ball_dx`, `ball_dy` | Ball x and y displacement in metres since the preceding valid ball observation. |
+| `ball_displacement` | Euclidean displacement in metres between valid observations. |
+| `ball_speed` | Original dataset ball speed in metres per second, when supplied. |
+| `ball_speed_calc` | Calculated average ball speed in metres per second between valid observations, using elapsed frame time. |
+| `ball_acceleration` | Change in calculated ball speed per second, in metres per second squared. |
+| `ball_direction_deg` | Ball movement direction in degrees calculated from metre-coordinate differences (`atan2(ball_dy, ball_dx)`). |
 | `ball_direction_change_deg` | Signed angular change in direction from the preceding valid movement vector, in degrees (−180 to 180). |
 | `ball_direction_change_abs_deg` | Absolute angular change from the preceding valid movement vector, in degrees (0 to 180). |
 | `team_a_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team A player's ball distance, in metres per second; positive means approaching the ball. |
 | `team_b_nearest_player_ball_relative_velocity` | Rate of decrease of the nearest Team B player's ball distance, in metres per second; positive means approaching the ball. |
 | `nearest_player_ball_relative_velocity` | Relative velocity for the nearest player on either team, in metres per second; positive means approaching the ball. |
 | `nearest_player_ball_relative_velocity_team` | Team of the nearest player used for `nearest_player_ball_relative_velocity`; ties go to Team A. |
-| `ball_velocity_x` | Horizontal component of ball velocity, in normalized pitch-length units per second. |
+| `ball_velocity_x` | Horizontal component of calculated ball velocity in metres per second. |
 | `ball_velocity_toward_team_a_goal` | Ball x velocity projected onto Team A's configured attacking direction; positive means toward that goal. |
 | `ball_velocity_toward_team_b_goal` | Ball x velocity projected onto Team B's configured attacking direction; positive means toward that goal. |
 | `ball_moving_toward_team_a_goal` | Whether the ball is moving toward Team A's configured goal (`True`/1); missing when velocity is unavailable. |
@@ -286,7 +287,10 @@ no observations.
 
 Ball motion features use available valid observations only; missing coordinates are not interpolated.
 The first observation or motion interval without a previous valid observation has undefined (NaN)
-motion values.
+motion values. Ball coordinates are converted to metres using the affine mapping fitted from
+normalized and metre-valued player coordinate pairs. The HMM uses `ball_speed_calc`, not the
+original `ball_speed`. Rebuild older feature caches with `--pipeline cleansing` or `--pipeline all`
+before running `--pipeline hmm`; earlier caches have different motion units and lack `ball_speed_calc`.
 
 ### Smart-tag and match-phase columns
 

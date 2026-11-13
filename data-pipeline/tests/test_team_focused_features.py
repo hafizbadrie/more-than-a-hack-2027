@@ -9,10 +9,67 @@ from stages.team_focused_features_extraction import (
     team_average_radial_movement,
     team_position_relative_to_ball,
 )
-from stages.ball_focused_features_extraction import extract_ball_trajectory_toward_goal
+from stages.ball_focused_features_extraction import (
+    extract_ball_acceleration,
+    extract_ball_direction_change,
+    extract_ball_speed,
+    extract_ball_trajectory_toward_goal,
+)
 
 
 class BallCoordinateUnitTests(unittest.TestCase):
+    def test_ball_motion_uses_metres_and_preserves_source_speed(self):
+        source = pd.DataFrame({
+            "video_frame": [10, 12, 14, 16],
+            "ball_x": [0.20, 0.22, float("nan"), 0.25],
+            "ball_y": [0.30, 0.32, float("nan"), 0.40],
+            "ball_speed": [70.0, 71.0, 72.0, 73.0],
+            "1_x": [0.1, 0.2, 0.3, 0.4],
+            "1_y": [0.1, 0.2, 0.3, 0.4],
+            "1_x_m": [20.0, 30.0, 40.0, 50.0],
+            "1_y_m": [12.0, 17.0, 22.0, 27.0],
+        })
+        params = {
+            "frame_col": "video_frame", "ball_x_col": "ball_x",
+            "ball_y_col": "ball_y", "fps": 10,
+            "team_a_attack_direction": 1, "team_b_attack_direction": -1,
+        }
+
+        speed = extract_ball_speed(source, params)
+        pd.testing.assert_series_equal(speed["ball_speed"], source["ball_speed"])
+        without_source_speed = extract_ball_speed(source.drop(columns="ball_speed"), params)
+        self.assertNotIn("ball_speed", without_source_speed)
+        pd.testing.assert_series_equal(
+            speed["ball_speed_calc"], without_source_speed["ball_speed_calc"]
+        )
+        pd.testing.assert_frame_equal(extract_ball_speed(speed, params), speed)
+        self.assertAlmostEqual(speed.loc[1, "ball_dx"], 2.0)
+        self.assertAlmostEqual(speed.loc[1, "ball_dy"], 1.0)
+        self.assertAlmostEqual(speed.loc[1, "ball_displacement"], 5 ** 0.5)
+        self.assertAlmostEqual(speed.loc[1, "ball_speed_calc"], 5 ** 0.5 / 0.2)
+        self.assertTrue(pd.isna(speed.loc[2, "ball_speed_calc"]))
+        self.assertAlmostEqual(speed.loc[3, "ball_displacement"], 5.0)
+        self.assertAlmostEqual(speed.loc[3, "ball_speed_calc"], 12.5)
+        self.assertTrue(pd.isna(speed.loc[0, "ball_speed_calc"]))
+
+        acceleration = extract_ball_acceleration(speed, params)
+        self.assertAlmostEqual(
+            acceleration.loc[3, "ball_acceleration"],
+            (12.5 - 5 ** 0.5 / 0.2) / 0.4,
+        )
+        direction = extract_ball_direction_change(acceleration, params)
+        self.assertAlmostEqual(direction.loc[1, "ball_direction_deg"], 26.565051177)
+        trajectory = extract_ball_trajectory_toward_goal(direction, params)
+        self.assertAlmostEqual(trajectory.loc[1, "ball_velocity_x"], 10.0)
+        self.assertAlmostEqual(trajectory.loc[3, "ball_velocity_x"], 7.5)
+
+    def test_ball_speed_requires_coordinate_calibration(self):
+        source = pd.DataFrame({
+            "video_frame": [0, 1], "ball_x": [0.2, 0.3], "ball_y": [0.2, 0.3],
+        })
+        with self.assertRaisesRegex(ValueError, "affine.*x"):
+            extract_ball_speed(source)
+
     def test_radial_movement_uses_ball_coordinates_in_metres(self):
         source = pd.DataFrame({
             "period_id": [1, 1],
@@ -145,7 +202,7 @@ class BallCoordinateUnitTests(unittest.TestCase):
             "period_id": [1, 2],
             "ball_dx": [1.0, 1.0],
             "ball_displacement": [1.0, 1.0],
-            "ball_speed": [2.0, 2.0],
+            "ball_speed_calc": [2.0, 2.0],
         })
 
         result = extract_ball_trajectory_toward_goal(
@@ -204,7 +261,7 @@ class BallCoordinateUnitTests(unittest.TestCase):
             "period_id": [3],
             "ball_dx": [1.0],
             "ball_displacement": [1.0],
-            "ball_speed": [2.0],
+            "ball_speed_calc": [2.0],
         })
 
         with self.assertRaisesRegex(ValueError, "Missing period direction"):
