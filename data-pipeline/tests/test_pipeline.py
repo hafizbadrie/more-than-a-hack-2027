@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main as pipeline_main
 from hmm_pipeline import prepare_cached_density
 from stages.hmm_possession import FEATURES, add_hmm_possession
+from stages.team_focused_features_extraction import _ball_coordinates_in_metres
 
 
 class PipelineTests(unittest.TestCase):
@@ -62,6 +63,15 @@ class PipelineTests(unittest.TestCase):
                 pipeline_main.REPO / "data/tactical/BAR-ATH_tactical_sample.csv",
                 nrows=100,
             )
+            second_period = sample.copy()
+            second_period["period_id"] = 2
+            second_period["video_frame"] += 100
+            for column in second_period.columns:
+                if column.endswith("_team"):
+                    second_period[column] = second_period[column].replace({
+                        "Barcelona": "Atletic Club", "Atletic Club": "Barcelona"
+                    })
+            sample = pd.concat([sample, second_period], ignore_index=True)
             sample["ball_speed"] = np.arange(len(sample), dtype=float)
             tags = pd.read_csv(
                 pipeline_main.REPO / "data/tactical/BAR-ATH_tactical_smart_tagging_sample.csv"
@@ -82,6 +92,25 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("min_team_a_dist", result.columns)
             self.assertIn("ball_speed_calc", result.columns)
             pd.testing.assert_series_equal(result["ball_speed"], sample["ball_speed"])
+            directions = pipeline_main.infer_attack_directions(
+                sample, pipeline_main.BALL_FOCUSED_PARAMS
+            )
+            ball_x_m, _ = _ball_coordinates_in_metres(sample, "ball_x", "ball_y")
+            self.assertEqual(directions[1]["Barcelona"], -directions[2]["Barcelona"])
+            for period, group in result.groupby("period_id"):
+                direction = directions[period]["Barcelona"]
+                pd.testing.assert_series_equal(
+                    group["ball_velocity_toward_team_a_goal"],
+                    group["ball_velocity_x"] * direction,
+                    check_names=False,
+                )
+                expected = (
+                    ball_x_m.loc[group.index] - group["team_centroid_x_barcelona"]
+                ) * direction
+                np.testing.assert_allclose(
+                    group["team_ball_longitudinal_distance_barcelona"], expected,
+                    equal_nan=True, atol=1e-6,
+                )
             self.assertFalse((Path(directory) / "missing.csv").exists())
 
     def test_hmm_requires_calculated_speed_instead_of_source_speed(self):

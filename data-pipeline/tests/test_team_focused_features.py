@@ -15,9 +15,87 @@ from stages.ball_focused_features_extraction import (
     extract_ball_speed,
     extract_ball_trajectory_toward_goal,
 )
+from stages.direction import infer_attack_directions
 
 
 class BallCoordinateUnitTests(unittest.TestCase):
+    def test_inferred_directions_drive_both_features(self):
+        source = pd.DataFrame({
+            "period_id": [1, 1, 2, 2],
+            "video_frame": [0, 1, 2, 3],
+            "ball_x": [0.5] * 4,
+            "ball_y": [0.5] * 4,
+            "1_x": [0.7, 0.6, 0.2, 0.3],
+            "1_y": [0.4] * 4,
+            "1_x_m": [70.0, 60.0, 20.0, 30.0],
+            "1_y_m": [40.0] * 4,
+            "1_team": ["Barcelona"] * 4,
+            "2_x": [0.3, 0.4, 0.8, 0.7],
+            "2_y": [0.6] * 4,
+            "2_x_m": [30.0, 40.0, 80.0, 70.0],
+            "2_y_m": [60.0] * 4,
+            "2_team": ["Atletic Club"] * 4,
+            "ball_dx": [1.0] * 4,
+            "ball_displacement": [1.0] * 4,
+            "ball_speed_calc": [2.0] * 4,
+        })
+        params = {"team_a": "Barcelona", "team_b": "Atletic Club"}
+        directions = infer_attack_directions(source, params)
+        self.assertEqual(directions, {
+            1: {"Barcelona": -1, "Atletic Club": 1},
+            2: {"Barcelona": 1, "Atletic Club": -1},
+        })
+        trajectory = extract_ball_trajectory_toward_goal(source, params, directions)
+        self.assertEqual(
+            trajectory["ball_velocity_toward_team_a_goal"].tolist(),
+            [-2.0, -2.0, 2.0, 2.0],
+        )
+        self.assertEqual(
+            trajectory["ball_velocity_toward_team_b_goal"].tolist(),
+            [2.0, 2.0, -2.0, -2.0],
+        )
+        positions = team_position_relative_to_ball(source, {}, directions)
+        self.assertAlmostEqual(
+            positions.loc[0, "team_ball_longitudinal_distance_barcelona"], 20.0
+        )
+        self.assertAlmostEqual(
+            positions.loc[2, "team_ball_longitudinal_distance_barcelona"], 30.0
+        )
+        self.assertAlmostEqual(
+            positions.loc[0, "team_ball_longitudinal_distance_atletic_club"], 20.0
+        )
+        self.assertAlmostEqual(
+            positions.loc[2, "team_ball_longitudinal_distance_atletic_club"], 30.0
+        )
+        with self.assertRaisesRegex(ValueError, "period"):
+            extract_ball_trajectory_toward_goal(source, params, {1: directions[1]})
+        with self.assertRaisesRegex(ValueError, "period"):
+            team_position_relative_to_ball(source, {}, {1: directions[1]})
+
+    def test_inference_uses_mean_frame_centroids_and_rejects_missing_or_tied_teams(self):
+        source = pd.DataFrame({
+            "period_id": [1, 1],
+            "video_frame": [0, 1],
+            "1_x_m": [0.0, 100.0],
+            "1_team": ["Barcelona"] * 2,
+            "2_x_m": [0.0, float("nan")],
+            "2_team": ["Barcelona"] * 2,
+            "3_x_m": [40.0, 40.0],
+            "3_team": ["Atletic Club"] * 2,
+        })
+        params = {"team_a": "Barcelona", "team_b": "Atletic Club"}
+        self.assertEqual(infer_attack_directions(source, params), {
+            1: {"Barcelona": -1, "Atletic Club": 1},
+        })
+        missing = source.copy()
+        missing["3_x_m"] = float("nan")
+        with self.assertRaisesRegex(ValueError, "Atletic Club"):
+            infer_attack_directions(missing, params)
+        tied = source.copy()
+        tied["3_x_m"] = 50.0
+        with self.assertRaisesRegex(ValueError, "equal"):
+            infer_attack_directions(tied, params)
+
     def test_ball_motion_uses_metres_and_preserves_source_speed(self):
         source = pd.DataFrame({
             "video_frame": [10, 12, 14, 16],

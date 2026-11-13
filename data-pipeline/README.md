@@ -340,11 +340,11 @@ and metre coordinates for each axis. Each axis needs at least two finite pairs w
 distinct normalized values; otherwise the stage raises an error. Regenerate cached
 cleansing output to incorporate changes to these features.
 
-Attack-facing features use `period_direction_multipliers` in the ball- and
-team-focused parameters. It maps each `period_id` to `+1` or `-1`; the configured
-team directions are multiplied by that value. The match defaults use `{1: 1, 2: -1}`
-to account for the halftime switch. If a configured period is absent from the mapping,
-the feature stage raises an error rather than applying a potentially incorrect direction.
+The cleansing pipeline infers attacking directions independently for each period from
+tracking: the team with the lower mean per-frame x centroid attacks toward positive x,
+and its opponent attacks toward negative x. Both ball and team attack-facing features
+use this shared mapping. Missing team positions or equal centroids cause an error.
+Regenerate the cleansing cache before running the HMM-only pipeline to use new directions.
 
 Team velocity, radial movement, and closing-speed features are based on successive valid
 observations at the configured 25 frames per second; their first observation in a period, or an

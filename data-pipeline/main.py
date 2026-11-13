@@ -18,6 +18,7 @@ from stages.ball_focused_features_extraction import (
     extract_possession_advantage,
 )
 from stages.clean import clean
+from stages.direction import infer_attack_directions
 from stages.export import export
 from stages.ingest import ingest
 from stages.smart_tags import build_phase_flags, build_tag_features
@@ -46,19 +47,11 @@ BALL_FOCUSED_PARAMS = {
     "ball_x_col": "ball_x",
     "ball_y_col": "ball_y",
     "fps": 25,
-    "team_a_attack_direction": 1,
-    "team_b_attack_direction": -1,
-    "period_direction_multipliers": {1: 1, 2: -1},
 }
 TEAM_FOCUSED_PARAMS = {
     "fps": 25,
     "ball_x_col": "ball_x",
     "ball_y_col": "ball_y",
-    "period_direction_multipliers": {1: 1, 2: -1},
-    "attack_directions": {
-        "Barcelona": 1,
-        "Atletic Club": -1,
-    },
 }
 MATCH_INFO = {"match_id": "BAR-ATH", "home_team": "BAR", "away_team": "ATH"}
 HMM_PARAMS = {
@@ -131,6 +124,12 @@ def build_cleansing_pipeline():
                 "ingested",
                 "cleaned",
                 name="clean",
+            ),
+            node(
+                infer_attack_directions,
+                ["cleaned", "params:ball_focused_features"],
+                "attack_directions_by_period",
+                name="infer_attack_directions",
             ),
             # Feature 1: Nearest player-ball distance
             node(
@@ -205,6 +204,7 @@ def build_cleansing_pipeline():
                 [
                     "features_relative_velocity",
                     "params:ball_focused_features",
+                    "attack_directions_by_period",
                 ],
                 "features_ball_trajectory",
                 name="ball_trajectory_toward_goal",
@@ -287,6 +287,7 @@ def build_cleansing_pipeline():
                 [
                     "with_opponent_team_proximity",
                     "params:team_focused_features",
+                    "attack_directions_by_period",
                 ],
                 "with_team_position_relative_to_ball",
                 name="team_position_relative_to_ball",

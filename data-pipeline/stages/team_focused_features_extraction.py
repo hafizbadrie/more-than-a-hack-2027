@@ -2,7 +2,7 @@
 import re
 import pandas as pd
 import numpy as np
-from stages.direction import period_direction_multipliers
+from stages.direction import attack_direction_for_team, period_direction_multipliers
 
 
 def _clean_team_name(team) -> str:
@@ -714,13 +714,9 @@ def opponent_team_proximity(
 def team_position_relative_to_ball(
     features: pd.DataFrame,
     params: dict | None = None,
+    attack_directions_by_period: dict | None = None,
 ) -> pd.DataFrame:
-    params = params or {}
-    ball_x_col = params.get("ball_x_col", "ball_x")
-    ball_y_col = params.get("ball_y_col", "ball_y")
-    attack_directions = params.get("attack_directions")
-    """
-    Feature set 8: Team positional relationship to ball.
+    """Feature set 8: Team positional relationship to ball.
 
     Calculate the longitudinal and lateral distance between each
     team's centroid and the ball.
@@ -731,19 +727,14 @@ def team_position_relative_to_ball(
     Positive lateral distance = ball is towards positive Y
     relative to the team centroid.
 
-    attack_directions:
-        Dictionary mapping original team names to their X-axis
-        attacking direction (+1 or -1).
-    period_direction_multipliers:
-        Optional mapping from period_id to +1/-1 to account for teams
-        switching ends. Missing periods are rejected.
-
-        Example:
-            {
-                "Barcelona": 1,
-                "Atletic Club": -1
-            }
+    attack_directions_by_period maps period IDs to team directions (+1 or -1).
+    When omitted, the legacy attack_directions and optional
+    period_direction_multipliers parameters are used.
     """
+    params = params or {}
+    ball_x_col = params.get("ball_x_col", "ball_x")
+    ball_y_col = params.get("ball_y_col", "ball_y")
+    attack_directions = params.get("attack_directions")
     df = features.copy()
 
     required_columns = ["video_frame", ball_x_col, ball_y_col]
@@ -759,13 +750,11 @@ def team_position_relative_to_ball(
     ball_x_m, ball_y_m = _ball_coordinates_in_metres(
         df, ball_x_col, ball_y_col
     )
-    direction_multiplier = period_direction_multipliers(df, params)
-
     player_data, frame_cols = _build_player_data(df)
 
     teams = player_data["team"].dropna().unique()
 
-    if attack_directions is None:
+    if attack_directions_by_period is None and attack_directions is None:
         raise ValueError(
             "Please provide attack_directions for both teams."
         )
@@ -777,24 +766,21 @@ def team_position_relative_to_ball(
             **{
                 ball_x_col: ball_x_m,
                 ball_y_col: ball_y_m,
-                "_period_direction_multiplier": direction_multiplier,
             }
         )
         .drop_duplicates(subset=frame_cols, keep="first")
     )
 
     for team in teams:
-        if team not in attack_directions:
-            raise ValueError(
-                f"Missing attacking direction for team '{team}'."
-            )
-
-        direction = attack_directions[team]
-
-        if direction not in (-1, 1):
-            raise ValueError(
-                f"Attack direction for '{team}' must be +1 or -1."
-            )
+        if attack_directions_by_period is not None:
+            direction = attack_direction_for_team(ball_positions, attack_directions_by_period, team)
+        else:
+            if team not in attack_directions:
+                raise ValueError(f"Missing attacking direction for team '{team}'.")
+            direction = attack_directions[team]
+            if direction not in (-1, 1):
+                raise ValueError(f"Attack direction for '{team}' must be +1 or -1.")
+            direction = direction * period_direction_multipliers(ball_positions, params)
 
         team_name = _clean_team_name(team)
 
@@ -813,7 +799,7 @@ def team_position_relative_to_ball(
         )
 
         team_positions = team_centroid.merge(
-            ball_positions,
+            ball_positions.assign(_attack_direction=direction),
             on=frame_cols,
             how="left",
         )
@@ -824,7 +810,7 @@ def team_position_relative_to_ball(
             f"team_ball_longitudinal_distance_{team_name}"
         ] = (
             team_positions[ball_x_col] - team_positions["centroid_x"]
-        ) * direction * team_positions["_period_direction_multiplier"]
+        ) * team_positions["_attack_direction"]
 
         # Positive means the ball is towards positive Y.
         team_positions[

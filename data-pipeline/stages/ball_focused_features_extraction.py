@@ -1,7 +1,7 @@
 """Feature extraction stages contributed by Dani."""
 import pandas as pd
 import numpy as np
-from stages.direction import period_direction_multipliers
+from stages.direction import attack_direction_for_team, period_direction_multipliers
 from stages.team_focused_features_extraction import _ball_coordinates_in_metres
 
 PARAMS = {
@@ -802,7 +802,7 @@ def extract_nearest_player_ball_relative_velocity(
 
 
 def extract_ball_trajectory_toward_goal(
-    df: pd.DataFrame, params: dict = PARAMS
+    df: pd.DataFrame, params: dict = PARAMS, attack_directions: dict | None = None
 ) -> pd.DataFrame:
     """
     Feature 8: Calculate ball movement relative to each team's
@@ -836,7 +836,7 @@ def extract_ball_trajectory_toward_goal(
         - Uses the actual average ball speed between valid observations.
         - Does not assume the nearest player is the possession team.
         - Calculates both teams' attacking perspectives independently.
-        - Period direction multipliers reverse directions after a side switch.
+        - Per-period directions take precedence over legacy direction parameters.
         - Does not interpolate missing ball observations.
         - Preserves all existing columns and features.
     """
@@ -860,27 +860,23 @@ def extract_ball_trajectory_toward_goal(
             f"{missing_columns}. Run extract_ball_speed() first."
         )
 
-    # Retrieve attacking directions
-    team_a_direction = params["team_a_attack_direction"]
-    team_b_direction = params["team_b_attack_direction"]
-
-    # Validate attack directions
-    if team_a_direction not in (-1, 1):
-        raise ValueError(
-            "team_a_attack_direction must be either -1 or +1."
-        )
-
-    if team_b_direction not in (-1, 1):
-        raise ValueError(
-            "team_b_attack_direction must be either -1 or +1."
-        )
-
-    if team_a_direction == team_b_direction:
-        raise ValueError(
-            "The two opposing teams should attack in opposite "
-            "directions during the same half."
-        )
-    direction_multiplier = period_direction_multipliers(out, params)
+    if attack_directions is not None:
+        team_a_direction = attack_direction_for_team(out, attack_directions, params["team_a"])
+        team_b_direction = attack_direction_for_team(out, attack_directions, params["team_b"])
+        if (team_a_direction == team_b_direction).any():
+            raise ValueError("The two opposing teams must attack in opposite directions.")
+    else:
+        team_a_direction = params["team_a_attack_direction"]
+        team_b_direction = params["team_b_attack_direction"]
+        if team_a_direction not in (-1, 1):
+            raise ValueError("team_a_attack_direction must be either -1 or +1.")
+        if team_b_direction not in (-1, 1):
+            raise ValueError("team_b_attack_direction must be either -1 or +1.")
+        if team_a_direction == team_b_direction:
+            raise ValueError("The two opposing teams should attack in opposite directions during the same half.")
+        direction_multiplier = period_direction_multipliers(out, params)
+        team_a_direction = team_a_direction * direction_multiplier
+        team_b_direction = team_b_direction * direction_multiplier
 
     # Calculate horizontal ball velocity.
     # ball_speed_calc contains the magnitude of the velocity.
@@ -895,12 +891,12 @@ def extract_ball_trajectory_toward_goal(
 
     # Project ball velocity onto Team A's attacking direction
     out["ball_velocity_toward_team_a_goal"] = (
-        out["ball_velocity_x"] * team_a_direction * direction_multiplier
+        out["ball_velocity_x"] * team_a_direction
     )
 
     # Project ball velocity onto Team B's attacking direction
     out["ball_velocity_toward_team_b_goal"] = (
-        out["ball_velocity_x"] * team_b_direction * direction_multiplier
+        out["ball_velocity_x"] * team_b_direction
     )
 
     # Determine whether the ball moves toward each team's goal.
