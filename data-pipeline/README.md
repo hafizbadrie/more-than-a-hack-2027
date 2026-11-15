@@ -5,6 +5,10 @@ A small [Kedro](https://kedro.org) pipeline that turns the raw tactical tracking
 ## Pipeline overview
 
 ```
+TACTICAL ATD metadata + tracking ──┐
+                                   ├──▶ data_preparation ──▶ raw_tactical
+TACTICAL Smart Tagging XML ────────┘                    └──▶ raw_smart_tag
+
 raw_tactical ──ingest──▶ clean ──▶ ball, tag and team features ──▶ tactical_processed.csv
                                       ▲
                              smart tags + parameters
@@ -14,6 +18,7 @@ tactical_processed.csv ──▶ HMM ──▶ hybrid possession ──▶ hybri
 
 | Stage | File | Purpose |
 |-------|------|---------|
+| data preparation | [data_preparation.py](data_preparation.py) | Convert tactical EPTS tracking and Smart Tagging data to CSV |
 | ingest | [stages/ingest.py](stages/ingest.py) | Typing and sorting of raw frames |
 | clean | [stages/clean.py](stages/clean.py) | Drop duplicates and empty columns |
 | features | [stages/ball_focused_features_extraction.py](stages/ball_focused_features_extraction.py), [stages/smart_tags.py](stages/smart_tags.py), [stages/team_focused_features_extraction.py](stages/team_focused_features_extraction.py) | Derive per-frame ball, tag and team features |
@@ -36,18 +41,28 @@ pip install -r data-pipeline/requirements.txt
 python data-pipeline/main.py
 ```
 
-Choose either pipeline independently:
+Choose a pipeline independently:
 
 ```bash
+python data-pipeline/main.py --pipeline data_preparation
 python data-pipeline/main.py --pipeline cleansing
 python data-pipeline/main.py --pipeline hmm
 ```
 
-The default (`--pipeline all`) runs both branches. Cleansing reads the tactical and
-smart-tag CSVs and writes `output/tactical_processed.csv`. HMM reads the existing
-`output/tactical_processed.csv` cache and writes `output/hybrid_results.csv` and the HMM
-diagnostic reports. It does not write a separate HMM prediction CSV. These outputs
-are overwritten when their respective pipeline runs.
+`data_preparation` reads the tactical ATD XML/TXT and Smart Tagging XML assets using
+Kloppy and writes `data/tactical/BAR-ATH_tactical_ds.csv` and
+`data/tactical/BAR-ATH_smart_tagging_ds.csv`, overwriting any existing files. The
+tracking conversion reproduces the notebook's zero-based video frames, second-half
+correction, raw ball speed, and per-player metre coordinates, ball distances and team
+names. The Smart Tagging conversion adds `start_frame` and `end_frame` from event
+timestamps at the match FPS. It uses `MTAH_DATA_DIR` when set for inputs and outputs.
+
+The default (`--pipeline all`) runs data preparation, cleansing and HMM in that order.
+It requires the tactical ATD and Smart Tagging assets and overwrites both raw CSVs.
+Cleansing reads those CSVs and writes `output/tactical_processed.csv`. HMM reads
+that feature cache and writes `output/hybrid_results.csv` and the HMM diagnostic reports.
+HMM alone uses the existing cache. It does not write a separate HMM prediction CSV.
+These outputs are overwritten when their respective pipeline runs.
 
 Run cleansing or `--pipeline all` to regenerate the feature cache before an HMM-only
 run; save any existing output you wish to keep first. Regeneration can change the
@@ -417,7 +432,7 @@ Rules of thumb:
 from stages.distance_gap import add_distance_gap
 ```
 
-### Step 3 – Register the node in `build_cleansing_pipeline()`
+### Step 3 – Register the node in `build_features_pipeline()`
 
 Add a `node(...)` entry in the `pipeline([...])` list. Syntax:
 
@@ -493,7 +508,7 @@ Open `data-pipeline/output/tactical_processed.csv` and confirm the new column (`
 
 - [ ] Function written in `stages/` (takes and returns a dataframe, no I/O)
 - [ ] Imported in `main.py`
-- [ ] Added to `build_cleansing_pipeline()` with a unique `name`
+- [ ] Added to `build_features_pipeline()` with a unique `name`
 - [ ] Downstream node (e.g. `export`) reads your output name
 - [ ] New dataset names / parameters registered in `build_catalog()`
 - [ ] `python data-pipeline/main.py --pipeline cleansing` runs and the output CSV has your feature

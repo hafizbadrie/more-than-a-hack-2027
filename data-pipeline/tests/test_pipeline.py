@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -12,6 +13,10 @@ from kedro_datasets.pandas import CSVDataset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main as pipeline_main
+from data_preparation import (
+    convert_atd_to_dataframe,
+    convert_smart_tagging_to_dataframe,
+)
 from hmm_pipeline import prepare_cached_density
 from stages.hmm_possession import FEATURES, add_hmm_possession
 from stages.team_focused_features_extraction import _ball_coordinates_in_metres
@@ -19,17 +24,23 @@ from stages.team_focused_features_extraction import _ball_coordinates_in_metres
 
 class PipelineTests(unittest.TestCase):
     def test_pipeline_boundaries_and_default(self):
-        cleansing = pipeline_main.build_cleansing_pipeline()
+        preparation = pipeline_main.build_data_preparation_pipeline()
+        cleansing = pipeline_main.build_features_pipeline()
         hmm = pipeline_main.build_hmm_pipeline()
         combined = pipeline_main.build_pipeline()
+        self.assertIn("raw_tactical", preparation.outputs())
+        self.assertIn("raw_smart_tag", preparation.outputs())
         self.assertIn("raw_tactical", cleansing.inputs())
-        self.assertNotIn("without_hmm", cleansing.inputs())
-        self.assertIn("without_hmm", hmm.inputs())
+        self.assertNotIn("final", cleansing.inputs())
+        self.assertIn("final", hmm.inputs())
         self.assertNotIn("raw_tactical", hmm.inputs())
-        self.assertEqual(combined.nodes, (cleansing + hmm).nodes)
+        self.assertNotIn("raw_tactical", combined.inputs())
+        self.assertNotIn("final", combined.inputs())
+        self.assertEqual(combined.nodes, (preparation + cleansing + hmm).nodes)
 
         for args, expected in [
             ([], combined),
+            (["--pipeline", "all"], combined),
             (["--pipeline", "cleansing"], cleansing),
             (["--pipeline", "hmm"], hmm),
         ]:
@@ -38,6 +49,98 @@ class PipelineTests(unittest.TestCase):
                 pipeline_main.main()
                 actual = runner.return_value.run.call_args.args[0]
                 self.assertEqual(actual.nodes, expected.nodes)
+
+    def test_data_preparation_cli_selection(self):
+        with patch.object(sys, "argv", ["main.py", "--pipeline", "data_preparation"]), \
+                patch.object(pipeline_main, "SequentialRunner") as runner:
+            pipeline_main.main()
+            actual = runner.return_value.run.call_args.args[0]
+            self.assertEqual(actual.nodes, pipeline_main.build_data_preparation_pipeline().nodes)
+
+    def test_data_preparation_atd_conversion_preserves_notebook_conversion(self):
+        home = SimpleNamespace(name="Home")
+        away = SimpleNamespace(name="Away")
+        players = [
+            SimpleNamespace(player_id="p1", team=home),
+            SimpleNamespace(player_id="p2", team=away),
+        ]
+        dataset = SimpleNamespace(
+            metadata=SimpleNamespace(
+                pitch_dimensions=SimpleNamespace(pitch_length=100, pitch_width=50),
+                teams=[
+                    SimpleNamespace(players=[players[0]]),
+                    SimpleNamespace(players=[players[1]]),
+                ],
+            ),
+            to_df=lambda: pd.DataFrame({
+                "frame_id": [110808, 110809, 110810],
+                "timestamp": ["00:00:00", "00:00:01", "00:00:02"],
+                "period_id": [1, 1, 1],
+                "ball_x": [0.2, 0.3, np.nan],
+                "ball_y": [0.4, 0.4, 0.5],
+                "p1_x": [0.5, 0.3, 0.1],
+                "p1_y": [0.4, 0.6, 0.5],
+                "p2_x": [0.2, np.nan, 0.4],
+                "p2_y": [0.4, np.nan, 0.5],
+            }),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "tracking.txt"
+            raw.write_text("110808:players:0.2,0.4,3.5\n110809:players:0.3,0.4,NaN\n")
+            paths = {"atd_meta": str(root / "meta.xml"), "atd_raw": str(raw)}
+            output = root / "output.csv"
+            catalog = DataCatalog({
+                "params:atd_paths": MemoryDataset(paths),
+                "params:second_half_start": MemoryDataset(110808),
+                "raw_tactical": CSVDataset(filepath=str(output), save_args={"index": False}),
+                "ingested": MemoryDataset(),
+            })
+            with patch("data_preparation.metrica.load_tracking_epts", return_value=dataset) as load:
+                SequentialRunner().run(
+                    pipeline_main.build_pipeline().only_nodes("atd_to_csv", "ingest"),
+                    catalog,
+                )
+            load.assert_called_once_with(meta_data=paths["atd_meta"], raw_data=paths["atd_raw"])
+            result = pd.read_csv(output)
+            self.assertEqual(catalog.load("ingested")["video_frame"].tolist(), [110807, 110808, 110809])
+            self.assertEqual(result["video_frame"].tolist(), [110807, 110808, 110809])
+            self.assertEqual(result["period_id"].tolist(), [1, 2, 2])
+            np.testing.assert_allclose(result["ball_speed"], [3.5, np.nan, np.nan], equal_nan=True)
+            np.testing.assert_allclose(result["p1_x_m"], [50, 30, 10])
+            np.testing.assert_allclose(result["p1_y_m"], [20, 30, 25])
+            np.testing.assert_allclose(result["p1_ball_dist_m"], [30, 10, np.nan], equal_nan=True)
+            np.testing.assert_allclose(result["p2_ball_dist_m"], [0, np.nan, np.nan], equal_nan=True)
+            self.assertEqual(result["p1_team"].tolist(), ["Home"] * 3)
+            self.assertEqual(result["p2_team"].tolist(), ["Away"] * 3)
+            self.assertNotIn("frame_id", result.columns)
+            self.assertFalse(any(column.startswith("Unnamed:") for column in result.columns))
+
+    def test_atd_conversion_rejects_malformed_raw_data(self):
+        dataset = SimpleNamespace(to_df=lambda: pd.DataFrame({
+            "frame_id": [1], "period_id": [1]
+        }))
+        with tempfile.TemporaryDirectory() as directory:
+            raw = Path(directory) / "tracking.txt"
+            raw.write_text("malformed\n")
+            with patch("data_preparation.metrica.load_tracking_epts", return_value=dataset):
+                with self.assertRaises(ValueError):
+                    convert_atd_to_dataframe({"atd_meta": "metadata.xml", "atd_raw": str(raw)}, 110808)
+
+    def test_smart_tagging_conversion_adds_video_frame_columns(self):
+        events = pd.DataFrame({
+            "timestamp": pd.to_timedelta(["00:00:01.2"]),
+            "end_timestamp": pd.to_timedelta(["00:00:02.4"]),
+            "label": ["Pass"],
+        })
+        paths = {"smart_tagging": "events.xml"}
+        with patch("data_preparation.sportscode.load") as load:
+            load.return_value.to_df.return_value = events
+            result = convert_smart_tagging_to_dataframe(paths, 25)
+        load.assert_called_once_with(paths["smart_tagging"])
+        self.assertEqual(result["start_frame"].tolist(), [30])
+        self.assertEqual(result["end_frame"].tolist(), [60])
+        self.assertEqual(result["label"].tolist(), ["Pass"])
 
     def test_density_option_preserves_input_and_rejects_non_boolean(self):
         source = pd.DataFrame({
@@ -86,7 +189,7 @@ class PipelineTests(unittest.TestCase):
                 "final": CSVDataset(filepath=str(output), save_args={"index": False}),
                 "without_hmm": CSVDataset(filepath=str(Path(directory) / "missing.csv")),
             })
-            SequentialRunner().run(pipeline_main.build_cleansing_pipeline(), catalog)
+            SequentialRunner().run(pipeline_main.build_features_pipeline(), catalog)
             result = pd.read_csv(output)
             self.assertEqual(len(result), len(sample))
             self.assertIn("min_team_a_dist", result.columns)

@@ -1,11 +1,18 @@
-"""Run the cleansing pipeline, the cached HMM pipeline, or both."""
+"""Run data preparation, cleansing, HMM, or all pipelines."""
 import argparse
+import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parent
+sys.path.insert(0, str(REPO))
+
+import games
 from kedro.io import DataCatalog, MemoryDataset
 from kedro.pipeline import node, pipeline
 from kedro.runner import SequentialRunner
 from kedro_datasets.pandas import CSVDataset
+from data_preparation import build_data_preparation_pipeline
 from hmm_pipeline import build_hmm_pipeline
 from stages.ball_focused_features_extraction import (
     extract_ball_acceleration,
@@ -32,9 +39,6 @@ from stages.team_focused_features_extraction import (
     team_position_relative_to_ball,
     team_width_and_depth,
 )
-
-ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent
 
 PARAMS = {"smoothing_window": 5}
 BALL_FOCUSED_PARAMS = {
@@ -112,7 +116,7 @@ HYBRID_PARAMS = {
 }
 
 
-def build_cleansing_pipeline():
+def build_features_pipeline():
     return pipeline(
         [
             node(
@@ -306,17 +310,19 @@ def build_cleansing_pipeline():
 
 
 def build_pipeline():
-    return build_cleansing_pipeline() + build_hmm_pipeline()
+    return build_data_preparation_pipeline() + build_features_pipeline() + build_hmm_pipeline()
 
 
 def build_catalog():
     catalog = DataCatalog(
         {
             "raw_tactical": CSVDataset(
-                filepath=str(REPO / "data/tactical/BAR-ATH_tactical_ds.csv")
+                filepath=str(ROOT / "output/BAR-ATH_tactical_atd.csv"),
+                save_args={"index": False},
             ),
             "raw_smart_tag": CSVDataset(
-                filepath=str(REPO / "data/tactical/BAR-ATH_smart_tagging_ds.csv")
+                filepath=str(ROOT / "output/BAR-ATH_tactical_smart_tagging.csv"),
+                save_args={"index": False},
             ),
             "ingested": MemoryDataset(),
             "cleaned": MemoryDataset(),
@@ -350,6 +356,11 @@ def build_catalog():
                 save_args={"index": False},
             ),
             "params:features": MemoryDataset(PARAMS),
+            "params:atd_paths": MemoryDataset(games.asset_paths(source="tactical")),
+            "params:second_half_start": MemoryDataset(
+                games.half_video_blocks(games.GAME)[1][1]
+            ),
+            "params:fps": MemoryDataset(games.GAMES[games.GAME]["fps"]),
             "params:ball_focused_features": MemoryDataset(
                 BALL_FOCUSED_PARAMS
             ),
@@ -368,15 +379,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--pipeline",
-        choices=("all", "cleansing", "hmm"),
+        choices=("all", "features", "hmm", "data_preparation"),
         default="all",
-        help="pipeline to run (default: all; HMM reads the existing feature cache)",
+        help="pipeline to run (default: all; HMM alone reads the existing feature cache)",
     )
     args = parser.parse_args()
     builders = {
-        "all": build_pipeline,
-        "cleansing": build_cleansing_pipeline,
+        "data_preparation": build_data_preparation_pipeline,
+        "features": build_features_pipeline,
         "hmm": build_hmm_pipeline,
+        "all": build_pipeline,
+        
     }
     (ROOT / "output").mkdir(exist_ok=True)
     SequentialRunner().run(builders[args.pipeline](), build_catalog())

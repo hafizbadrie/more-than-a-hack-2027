@@ -2,3 +2,4 @@ kedro>=0.19
 kedro-datasets[pandas]>=3.0
 pandas
 hmmlearn
+kloppy==3.18.0
