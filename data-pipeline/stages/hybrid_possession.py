@@ -3,11 +3,14 @@
 The method has three parts, each driven by the config, so you can add, remove or re-configure approaches without
 touching the code of the others:
 
-    1. COMPONENTS   one feature (one label per frame) per approach:  hmm, geometry, clear_geometry, tags, dead_ball.
-                    A component says H, A (or D for dead_ball) where it has an opinion and X where it abstains.
+    1. COMPONENTS   one feature (one label per frame) per approach:  hmm, geometry, clear_geometry, tags, dead_ball,
+                    physical_dead, ball_lost, touches, last_touch.  A component says H, A (or D for the dead-ball ones) where it has an
+                    opinion and X where it abstains.  `touches` marks the frames where a player plays the ball; it is
+                    not a selection rule but feeds the smoothing step snap_to_touch.
     2. SELECTION    an ordered list of rules: for every frame, the first rule whose component has an opinion (and whose
                     optional conditions hold) decides.  This is "priority" and "if-then-else" in one list.
-    3. SMOOTHING    an ordered list of steps applied to the selected H/A labels: majority_vote, merge_short, ...
+    3. SMOOTHING    an ordered list of steps applied to the selected H/A labels: majority_vote, merge_short,
+                    snap_to_touch (moves each possession change to the new team's first touch), ...
 
     D (dead ball) is handled in one place:  `smoothing.dead_handling` = "gap" (default; the smoothing does not see the
     stoppage, so a possession can be merged across it) or "split" (each side of a stoppage is smoothed on its own).
@@ -45,6 +48,7 @@ TO ADD A NEW APPROACH
 TO ADD A NEW SMOOTHING STEP
     @smoother("my_step")
     def my_step(local_labels, step, ctx): ...return the new labels of one block (array of "H"/"A"/"X")
+  (use @smoother("my_step", needs_index=True) and fn(local, step, ctx, index) to read per-frame signals of ctx.signals)
 
 HOW TO LOOK AT THE PIECES
     result = run(df, config)
@@ -227,6 +231,7 @@ class Context:
 # ======================================================================================================================
 COMPONENTS = {}      # name -> (function, required columns)
 SMOOTHERS = {}       # name -> function(local_labels, step, ctx) -> new labels of one block
+INDEXED_SMOOTHERS = set()   # smoothers that also receive the block's row positions in ctx.ordered: fn(local, step, ctx, index)
 
 
 def component(name, requires=()):
@@ -237,9 +242,13 @@ def component(name, requires=()):
     return wrap
 
 
-def smoother(name):
+def smoother(name, needs_index=False):
+    """Register a smoothing step.  With needs_index=True the function is called as fn(local, step, ctx, index), where
+    `index` holds the positions of the block's frames in ctx.ordered (to look up per-frame signals in ctx.signals)."""
     def wrap(fn):
         SMOOTHERS[name] = fn
+        if needs_index:
+            INDEXED_SMOOTHERS.add(name)
         return fn
     return wrap
 
@@ -297,6 +306,61 @@ def tags_component(ctx, params):
 
 
 # ---------------------------------------------------------------------------------------------------------- dead_ball
+def player_speed(speeds, min_players, top_k=None):
+    """One speed per frame from the {n}_s columns (a DataFrame): the median of the tracked players, or with top_k the mean of
+    the top_k fastest ones.  NaN where fewer than min_players (and, with top_k, fewer than top_k) players are tracked."""
+    tracked = speeds.notna().sum(axis=1)
+    if top_k is None:
+        return speeds.median(axis=1).where(tracked >= min_players)
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+        raise ValueError("Hybrid slow_top_k must be a positive integer")
+    values = np.sort(np.where(speeds.notna().to_numpy(), speeds.to_numpy(dtype=float), -np.inf), axis=1)[:, ::-1][:, :top_k]
+    fastest = pd.Series(values.mean(axis=1), index=speeds.index)
+    return fastest.where((tracked >= max(min_players, top_k)) & np.isfinite(fastest))
+
+
+def physical_signals(ctx, still_m, slow_mps, min_players, team_cols=None, team_thr=None, slow_window_s=1.0, slow_top_k=None):
+    """The label-free physical signals, shared by the dead-ball components (cached per parameter set).
+
+    still       the ball moved less than still_m (m) within +-1 s (and is tracked for 80% of that window)
+    slow        the player speed is below slow_mps within +-slow_window_s; the speed is the MEDIAN over the tracked players,
+                or with slow_top_k = k the mean of the k FASTEST tracked players (in live play a few players always run,
+                in a stoppage even the fastest walk) (default 1 s; a longer window
+                asks for SUSTAINED slowness, so brief bursts of running do not hide a walking stoppage)
+    outside     the ball has been outside the pitch for at least 1 s
+    team_still  (only if team_cols / team_thr are given) both teams' centroid speeds are below team_thr within +-1 s
+    -> (still, slow, outside, team_still)   boolean arrays, one value per row of ctx.ordered
+    """
+    key = ("physical", still_m, slow_mps, min_players, tuple(team_cols or ()), team_thr, slow_window_s, slow_top_k)
+    if key in ctx._cache:
+        return ctx._cache[key]
+    fps, (length, width) = ctx.fps, ctx.pitch_m
+    seen, inside, bx, by = ctx.ball()
+    n = len(ctx.ordered)
+    speeds = ctx.numeric[ctx.speed_columns]
+    medians = player_speed(speeds, min_players, slow_top_k)
+    still, slow, outside, team_still = (np.zeros(n, dtype=bool) for _ in range(4))
+    if team_thr is not None:
+        motion = ctx.numeric[list(team_cols)].max(axis=1, skipna=True).where(ctx.numeric[list(team_cols)].notna().any(axis=1))
+    size = 2 * fps + 1                                                       # +-1 second
+    slow_size = 2 * int(round(slow_window_s * fps)) + 1                      # +-slow_window_s for the player speeds
+    for seq in ctx.sequences:
+        x = pd.Series(np.where(seen[seq], bx[seq] * length, np.nan))
+        y = pd.Series(np.where(seen[seq], by[seq] * width, np.nan))
+        count = pd.Series(seen[seq].astype(int)).rolling(size, center=True, min_periods=1).sum()
+        dx = x.rolling(size, center=True, min_periods=1).max() - x.rolling(size, center=True, min_periods=1).min()
+        dy = y.rolling(size, center=True, min_periods=1).max() - y.rolling(size, center=True, min_periods=1).min()
+        still[seq] = ((count >= 0.8 * size) & (dx < still_m) & (dy < still_m)).to_numpy()
+        speed = medians.iloc[seq].reset_index(drop=True).rolling(slow_size, center=True, min_periods=slow_size // 2).median()
+        slow[seq] = (speed < slow_mps).to_numpy()
+        outside[seq] = _runs_at_least(seen[seq] & ~inside[seq], fps)
+        if team_thr is not None:
+            smooth = motion.iloc[seq].reset_index(drop=True).rolling(size, center=True, min_periods=fps).median()
+            team_still[seq] = (smooth < team_thr).to_numpy()
+    ctx._cache[key] = (still, slow, outside, team_still)
+    return ctx._cache[key]
+
+
 @component("dead_ball", requires=["ball_x", "ball_y", "sp_kind", "sp_since", "{n}_s"])
 def dead_ball_component(ctx, params):
     """D where play is stopped, X elsewhere.  A frame is dead when
@@ -306,7 +370,14 @@ def dead_ball_component(ctx, params):
               the ball hardly moved within +-1 s (still) / median player speed is low within +-1 s (slow) / ball not tracked
 
     then gaps shorter than dead_merge_gap_s are closed and stretches shorter than dead_min_duration_s are dropped.
-    The intermediate signals are kept in ctx.signals (still, slow, outside, event_window, dead_raw).
+    The intermediate signals are kept in ctx.signals (still, slow, outside, event_window, dead_raw, team_still).
+
+    OPTIONAL team-level stillness (off unless "team_still_mps" is given): both teams' centroid speeds are low
+    (columns "team_speed_columns", e.g. team_centroid_speed_<team> from the team features; the larger of the two,
+    smoothed with a +-1 s rolling median, must be below team_still_mps).  A team that is not moving as a unit
+    is a dead-ball sign even when single players still walk about, which the median-speed "slow" signal misses.
+        team_still_anywhere False (default): it counts like still / slow, i.e. only inside set-piece windows
+        team_still_anywhere True : it also marks dead ball outside the windows (still cleaned with dead_min_duration_s)
     """
     still_m = _positive(params, "still_distance_m")
     slow_mps = _positive(params, "slow_speed_mps")
@@ -321,33 +392,267 @@ def dead_ball_component(ctx, params):
             not isinstance(k, str) or not np.isfinite(v) or v < 0 for k, v in cutoffs.items()):
         raise ValueError("Hybrid set_piece_cutoffs_s must map names to non-negative finite seconds")
 
-    fps, (length, width) = ctx.fps, ctx.pitch_m
-    seen, inside, bx, by = ctx.ball()
+    team_cols = params.get("team_speed_columns")
+    team_thr = params.get("team_still_mps")
+    anywhere = params.get("team_still_anywhere", False)
+    if not isinstance(anywhere, bool):
+        raise ValueError("Hybrid team_still_anywhere must be a boolean")
+    if (team_thr is None) != (not team_cols):
+        raise ValueError("Hybrid team_still_mps and team_speed_columns must be given together")
+    if team_thr is not None:
+        _positive(params, "team_still_mps")
+    fps = ctx.fps
+    seen = ctx.ball()[0]
     n = len(ctx.ordered)
-    speeds = ctx.numeric[ctx.speed_columns]
-    medians = speeds.median(axis=1).where(speeds.notna().sum(axis=1) >= min_players)
-    still, slow, outside = (np.zeros(n, dtype=bool) for _ in range(3))
-    size = 2 * fps + 1                                                       # +-1 second
-    for seq in ctx.sequences:
-        x = pd.Series(np.where(seen[seq], bx[seq] * length, np.nan))
-        y = pd.Series(np.where(seen[seq], by[seq] * width, np.nan))
-        count = pd.Series(seen[seq].astype(int)).rolling(size, center=True, min_periods=1).sum()
-        dx = x.rolling(size, center=True, min_periods=1).max() - x.rolling(size, center=True, min_periods=1).min()
-        dy = y.rolling(size, center=True, min_periods=1).max() - y.rolling(size, center=True, min_periods=1).min()
-        still[seq] = ((count >= 0.8 * size) & (dx < still_m) & (dy < still_m)).to_numpy()
-        speed = medians.iloc[seq].reset_index(drop=True).rolling(size, center=True, min_periods=fps).median()
-        slow[seq] = (speed < slow_mps).to_numpy()
-        outside[seq] = _runs_at_least(seen[seq] & ~inside[seq], fps)
+    still, slow, outside, team_still = physical_signals(ctx, still_m, slow_mps, min_players, team_cols, team_thr)
 
     since = ctx.numeric["sp_since"].to_numpy(dtype=float)
     event_window = np.zeros(n, dtype=bool)
     for kind, cutoff in cutoffs.items():
         matches = ctx.ordered["sp_kind"].eq(kind).fillna(False).to_numpy(dtype=bool)
         event_window |= matches & np.isfinite(since) & (since >= 0) & (since <= cutoff)
-    dead_raw = outside | (event_window & (still | slow | ~seen))
+    dead_raw = outside | (event_window & (still | slow | team_still | ~seen))
+    if anywhere:
+        dead_raw = dead_raw | team_still
     dead = _filter_dead_runs(dead_raw, ctx.sequences, int(round(min_s * fps)), int(round(gap_s * fps)))
-    ctx.signals.update(still=still, slow=slow, outside=outside, event_window=event_window, dead_raw=dead_raw)
+    ctx.signals.update(still=still, slow=slow, outside=outside, event_window=event_window, dead_raw=dead_raw,
+                       team_still=team_still)
     return np.where(dead, "D", "X").astype("<U1")
+
+
+# ---------------------------------------------------------------------------------------------------------- ball_lost
+@component("ball_lost", requires=["ball_x", "ball_y", "{n}_s"])
+def ball_lost_component(ctx, params):
+    """D where the ball is untracked for a stretch that is about as long as a stoppage; X elsewhere.
+
+    On this match the ball is untracked in runs that are either short occlusions (< 2 s), stoppage-sized (5-20 s) or
+    tracking outages of 20 s to several minutes (the length distribution has no runs of 2-5 s).  Only the stoppage-sized
+    runs are taken: a run is D when
+        min_s <= its length <= max_s,
+        it does not touch the start or end of a gap-free sequence (a run cut by a period border or a tracking hole has an
+        unknown length), and
+        (optional) the median player speed inside it is at most max_median_speed_mps (players walk when play is stopped).
+    Check the thresholds with untracked_runs_check.py (label-free, whole match) before using them.
+
+        params: min_s, max_s, min_tracked_players, optional max_median_speed_mps
+    The runs are kept in ctx.signals["ball_lost_runs"] as (first row, last row, median speed) for inspection.
+    """
+    min_s, max_s = _positive(params, "min_s"), _positive(params, "max_s")
+    if max_s < min_s:
+        raise ValueError("Hybrid ball_lost max_s must be at least min_s")
+    ceiling = params.get("max_median_speed_mps")
+    if ceiling is not None:
+        _positive(params, "max_median_speed_mps")
+    min_players = params["min_tracked_players"]
+    if (isinstance(min_players, bool) or not isinstance(min_players, int)
+            or not 1 <= min_players <= len(ctx.speed_columns)):
+        raise ValueError("Hybrid min_tracked_players must be between 1 and the number of speed columns")
+    fps = ctx.fps
+    seen = ctx.ball()[0]
+    speeds = ctx.numeric[ctx.speed_columns]
+    medians = speeds.median(axis=1).where(speeds.notna().sum(axis=1) >= min_players).to_numpy()
+    out = np.full(len(seen), "X", dtype="<U1")
+    kept = []
+    for seq in ctx.sequences:
+        lost = ~seen[seq]
+        edges = np.diff(np.r_[False, lost, False].astype(int))
+        for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+            length = (end - start) / fps
+            if start == 0 or end == len(seq) or not min_s <= length <= max_s:
+                continue
+            rows = seq[start:end]
+            speed = float(np.nanmedian(medians[rows])) if np.isfinite(medians[rows]).any() else np.nan
+            if ceiling is not None and not speed <= ceiling:
+                continue
+            out[rows] = "D"
+            kept.append((int(rows[0]), int(rows[-1]), speed))
+    ctx.signals["ball_lost_runs"] = kept
+    return out
+
+
+# ------------------------------------------------------------------------------------- hmm_dead / physical_dead
+def _agreement_dead(ctx, params, require_hmm):
+    """Shared by hmm_dead (require_hmm True) and physical_dead (False): D where the chosen physical signals hold
+    (and, for hmm_dead, the HMM says D too), cleaned with min_duration_s / merge_gap_s.  Works anywhere in the match."""
+    known = {"still_distance_m", "slow_speed_mps", "slow_window_s", "slow_top_k", "min_tracked_players", "require", "agree_with",
+             "agree_mode", "min_duration_s", "merge_gap_s", "team_speed_columns", "team_still_mps"}
+    if set(params) - known:
+        raise ValueError("Hybrid physical_dead / hmm_dead: unknown parameter(s) %s (known: %s)"
+                         % (sorted(set(params) - known), sorted(known)))
+    still_m = _positive(params, "still_distance_m")
+    slow_mps = _positive(params, "slow_speed_mps")
+    min_s = _positive(params, "min_duration_s", strict=False)
+    gap_s = _positive(params, "merge_gap_s", strict=False)
+    min_players = params["min_tracked_players"]
+    if (isinstance(min_players, bool) or not isinstance(min_players, int)
+            or not 1 <= min_players <= len(ctx.speed_columns)):
+        raise ValueError("Hybrid min_tracked_players must be between 1 and the number of speed columns")
+    require = list(params.get("require", []))
+    agree = list(params.get("agree_with", [] if require else ["still", "slow"]))
+    mode = params.get("agree_mode", "any")
+    names = ("still", "slow", "team_still")
+    if any(a not in names for a in require + agree) or not (require or agree):
+        raise ValueError("Hybrid agree_with / require must be lists of still / slow / team_still, not both empty")
+    if mode not in ("any", "all"):
+        raise ValueError("Hybrid agree_mode must be 'any' or 'all'")
+    team_cols, team_thr = params.get("team_speed_columns"), params.get("team_still_mps")
+    if (team_thr is None) != (not team_cols):
+        raise ValueError("Hybrid team_still_mps and team_speed_columns must be given together")
+    if "team_still" in agree + require and team_thr is None:
+        raise ValueError("Hybrid agree_with has team_still but team_still_mps / team_speed_columns are missing")
+    if team_thr is not None:
+        _positive(params, "team_still_mps")
+    slow_window_s = _positive(params, "slow_window_s") if "slow_window_s" in params else 1.0
+    slow_top_k = params.get("slow_top_k")
+    still, slow, _, team_still = physical_signals(ctx, still_m, slow_mps, min_players, team_cols, team_thr, slow_window_s,
+                                                  slow_top_k)
+    signals = {"still": still, "slow": slow, "team_still": team_still}
+    physical = np.ones(len(still), bool)
+    if agree:
+        stack = np.vstack([signals[a] for a in agree])
+        physical = stack.all(axis=0) if mode == "all" else stack.any(axis=0)
+    for r in require:                                   # `require`: every listed signal must hold; agree_with: any/all of
+        physical = physical & signals[r]
+    raw = physical
+    if require_hmm:
+        hmm = ctx.ordered["hmm_possession"].to_numpy()
+        if not np.isin(hmm, ["H", "A", "D", "X"]).all():
+            raise ValueError("Hybrid hmm_possession must contain only H, A, D or X")
+        raw = (hmm == "D") & physical
+    dead = _filter_dead_runs(raw, ctx.sequences, int(round(min_s * ctx.fps)), int(round(gap_s * ctx.fps)))
+    return raw, physical, dead
+
+
+@component("hmm_dead", requires=["hmm_possession", "ball_x", "ball_y", "{n}_s"])
+def hmm_dead_component(ctx, params):
+    """D where the HMM says D AND the physical evidence agrees; X elsewhere.
+
+    CAUTION: on this match the HMM's D state fires on ~94% of clearly live frames (see hmm_dead_check.py), so it is not a
+    dead-ball detector and adds no independent information.  Kept for completeness; prefer physical_dead.
+
+        params: still_distance_m, slow_speed_mps, slow_window_s (default 1.0), slow_top_k (default None = median speed), min_tracked_players, require (all must hold), agree_with (list of still / slow / team_still),
+                agree_mode ("any" | "all"), min_duration_s, merge_gap_s, optional team_speed_columns + team_still_mps
+    """
+    raw, physical, dead = _agreement_dead(ctx, params, require_hmm=True)
+    ctx.signals.update(hmm_dead_raw=raw, hmm_dead_physical=physical)
+    return np.where(dead, "D", "X").astype("<U1")
+
+
+@component("physical_dead", requires=["ball_x", "ball_y", "{n}_s"])
+def physical_dead_component(ctx, params):
+    """D where the chosen physical signals hold, anywhere in the match (not only in set-piece windows); X elsewhere.
+
+    Same parameters as hmm_dead, no HMM.  Example "ball still AND (players slow OR team still)":
+    require ["still"], agree_with ["slow", "team_still"], agree_mode "any".  Typical choices: agree_with ["still"] (ball at rest for a while), or
+    agree_with ["still", "slow"] with agree_mode "all" (ball AND players at rest).  Pick the signals and the minimum
+    duration with hmm_dead_check.py: accept a rule only if it fires on <= 1% of clearly live frames.
+    """
+    raw, physical, dead = _agreement_dead(ctx, params, require_hmm=False)
+    ctx.signals.update(physical_dead_raw=raw)
+    return np.where(dead, "D", "X").astype("<U1")
+
+
+# --------------------------------------------------------------------------------------------------------- touches
+@component("touches", requires=["min_team_a_dist", "min_team_b_dist", "ball_x", "ball_y"])
+def touches_component(ctx, params):
+    """H / A on the frames where a player plays the ball, X everywhere else (not meant as a selection rule).
+
+    A touch is a sudden change of the ball's velocity while a player is at the ball:
+        v_in(t)  = ball velocity over the window_frames before t,   v_out(t) = over the window_frames after t
+        delta(t) = |v_out - v_in|  (m/s)
+    t is a touch when delta is a local maximum within +-peak_s, delta >= min_delta_mps, and the nearest player of one
+    team is within max_player_dist_m of the ball (the team whose nearest player is closer by more than team_margin_m
+    gets the touch; if neither is clearly closer the touch is X).
+
+        params: window_frames (int >= 1), min_delta_mps, peak_s, max_player_dist_m, team_margin_m (>= 0)
+    Stores ctx.signals["touch_team"] (the labels) and ctx.signals["touch_delta_v"] (delta for every frame).
+    """
+    k = params["window_frames"]
+    if isinstance(k, bool) or not isinstance(k, int) or k < 1:
+        raise ValueError("Hybrid window_frames must be a positive integer")
+    min_delta = _positive(params, "min_delta_mps")
+    peak = max(int(round(_positive(params, "peak_s") * ctx.fps)), 1)
+    max_dist = _positive(params, "max_player_dist_m")
+    margin = _positive(params, "team_margin_m", strict=False)
+    fps, (length, width) = ctx.fps, ctx.pitch_m
+    seen, _, bx, by = ctx.ball()
+    a = np.where(np.isfinite(ctx.numeric["min_team_a_dist"].to_numpy(dtype=float)),
+                 ctx.numeric["min_team_a_dist"].to_numpy(dtype=float), np.inf)
+    b = np.where(np.isfinite(ctx.numeric["min_team_b_dist"].to_numpy(dtype=float)),
+                 ctx.numeric["min_team_b_dist"].to_numpy(dtype=float), np.inf)
+    n = len(ctx.ordered)
+    labels = np.full(n, "X", dtype="<U1")
+    delta_all = np.full(n, np.nan)
+    peaks = np.zeros(n, dtype=bool)                  # every touch, also the contested ones
+    for seq in ctx.sequences:
+        m = len(seq)
+        if m < 2 * k + 1:
+            continue
+        x = np.where(seen[seq], bx[seq] * length, np.nan)
+        y = np.where(seen[seq], by[seq] * width, np.nan)
+        step_x, step_y = (x[k:] - x[:-k]) * fps / k, (y[k:] - y[:-k]) * fps / k     # velocity between t and t + k
+        delta = np.full(m, np.nan)
+        delta[k:m - k] = np.hypot(step_x[k:m - k] - step_x[:m - 2 * k], step_y[k:m - k] - step_y[:m - 2 * k])
+        delta_all[seq] = delta
+        top = pd.Series(delta).rolling(2 * peak + 1, center=True, min_periods=1).max().to_numpy()
+        candidates = np.flatnonzero(np.isfinite(delta) & (delta >= min_delta) & (delta >= top))
+        near_a = pd.Series(a[seq]).rolling(2 * k + 1, center=True, min_periods=1).min().to_numpy()
+        near_b = pd.Series(b[seq]).rolling(2 * k + 1, center=True, min_periods=1).min().to_numpy()
+        last = -10 ** 9
+        for t in candidates:
+            if t - last <= peak:                      # a plateau of equal maxima counts once
+                continue
+            last = t
+            if min(near_a[t], near_b[t]) > max_dist:
+                continue
+            peaks[seq[t]] = True
+            if near_a[t] + margin < near_b[t]:
+                labels[seq[t]] = "H"
+            elif near_b[t] + margin < near_a[t]:
+                labels[seq[t]] = "A"
+    ctx.signals["touch_team"] = labels
+    ctx.signals["touch_delta_v"] = delta_all
+    ctx.signals["touch_peak"] = peaks
+    return labels
+
+
+@component("last_touch", requires=["min_team_a_dist", "min_team_b_dist", "ball_x", "ball_y"])
+def last_touch_component(ctx, params):
+    """H / A for the team that played the ball last, while the ball is travelling; X otherwise.
+
+    Fills the frames where nobody is near the ball (a pass or a clearance in flight), which clear_geometry leaves open
+    and which `tags` would otherwise decide by the attacking phase, i.e. "the team in the attacking phase keeps the
+    ball".  Here the ball belongs to whoever kicked it until somebody else plays it, whatever the phase tag says.
+    A touch (same detector and parameters as `touches`) holds its team from the touch to the next touch of anybody,
+    for at most hold_s seconds, and never while the ball is outside the pitch or untracked.  A touch with no clear team
+    (contested) ends the hold and abstains.
+
+        params: the `touches` parameters (window_frames, min_delta_mps, peak_s, max_player_dist_m, team_margin_m) + hold_s
+    Rank it after clear_geometry and before tags:  dead_ball, clear_geometry, last_touch, tags, geometry, hmm.
+    """
+    hold = int(round(_positive(params, "hold_s") * ctx.fps))
+    touch_params = {k: v for k, v in params.items() if k != "hold_s"}
+    ball_labels = touches_component(ctx, touch_params)
+    _, inside, _, _ = ctx.ball()
+    # every touch, also the contested ones (the detector's X touches are not in `labels`): use the delta peaks again
+    peaks = ctx.signals["touch_peak"]
+    labels = np.full(len(ball_labels), "X", dtype="<U1")
+    for seq in ctx.sequences:
+        t_all = np.flatnonzero(peaks[seq])
+        for i, t in enumerate(t_all):
+            team = ball_labels[seq[t]]
+            if team == "X":
+                continue
+            end = t_all[i + 1] if i + 1 < len(t_all) else len(seq)
+            end = min(end, t + hold + 1)
+            span = np.arange(t, end)
+            span = span[inside[seq[span]]]
+            labels[seq[span]] = team
+            outside = np.flatnonzero(~inside[seq[t:end]])
+            if len(outside):                                  # stop at the first frame outside / untracked
+                labels[seq[t + outside[0]:end]] = "X"
+    ctx.signals["last_touch_team"] = labels
+    return labels
 
 
 # ======================================================================================================================
@@ -402,8 +707,61 @@ def merge_short(local, step, ctx):
     return out
 
 
+@smoother("snap_to_touch", needs_index=True)
+def snap_to_touch(local, step, ctx, index):
+    """Move every H<->A change to the first touch of the team that gains the ball.
+
+    The geometry labels flip when the new team's player gets nearer to the ball than the old team's, which is usually
+    before that player actually plays it.  For each change from team P to team Q at frame b, look at the touches
+    (ctx.signals["touch_team"], from the `touches` component) within +-max_shift_s of b:
+        * Q's touch that FOLLOWS the last touch of P inside the window is the new change point
+          (if P never touches in the window: the Q touch nearest to b);
+        * no such touch  ->  the change stays where it is.
+    A change never moves past its neighbours (every possession keeps at least one frame) and X frames are not touched.
+
+        step: {"type": "snap_to_touch", "max_shift_s": 3.0}
+    """
+    reach = int(round(_positive(step, "max_shift_s") * ctx.fps))
+    touch = ctx.signals["touch_team"][index]
+    out = local.copy()
+    positions = np.flatnonzero(np.isin(local, ["H", "A"]))
+    if len(positions) < 2 or not reach:
+        return out
+    values = local[positions]
+    starts = np.r_[0, np.flatnonzero(values[1:] != values[:-1]) + 1]
+    if len(starts) < 2:
+        return out
+    boundary = positions[starts[1:]]                 # first frame of every new possession (block-local index)
+    from_team, to_team = values[starts[:-1]], values[starts[1:]]
+    floor = positions[0] + 1                         # the previous possession keeps at least one frame
+    for i, b in enumerate(boundary):
+        ceiling = (boundary[i + 1] if i + 1 < len(boundary) else len(local)) - 1
+        lo, hi = max(b - reach, floor), min(b + reach, ceiling)
+        new_b = b
+        if lo <= hi:
+            window = touch[lo:hi + 1]
+            gains = lo + np.flatnonzero(window == to_team[i])
+            losses = lo + np.flatnonzero(window == from_team[i])
+            target = None
+            if len(gains):
+                if len(losses):
+                    later = gains[gains > losses[-1]]
+                    target = int(later[0]) if len(later) else None
+                else:
+                    target = int(gains[np.argmin(np.abs(gains - b))])
+            if target is not None:
+                new_b = target
+                if new_b > b:
+                    out[b:new_b] = from_team[i]
+                elif new_b < b:
+                    out[new_b:b] = to_team[i]
+        floor = new_b + 1
+    return out
+
+
 def _per_block(labels, sequences, fn):
-    """Apply fn to each block of frames between D frames (blocks never cross a sequence boundary)."""
+    """Apply fn(labels_of_block, positions_of_block) to each block of frames between D frames (blocks never cross a
+    sequence boundary)."""
     result = labels.copy()
     for sequence in sequences:
         start = 0
@@ -412,7 +770,7 @@ def _per_block(labels, sequences, fn):
                 continue
             segment = sequence[start:end]
             if len(segment):
-                result[segment] = fn(labels[segment])
+                result[segment] = fn(labels[segment], segment)
             start = end + 1
     return result
 
@@ -438,6 +796,8 @@ def check_config(config: dict):
     for step in config["smoothing"]["steps"]:
         if step["type"] not in SMOOTHERS:
             raise ValueError("Unknown smoothing step %r (known: %s)" % (step["type"], sorted(SMOOTHERS)))
+        if step["type"] == "snap_to_touch" and "touches" not in config["components"]:
+            raise ValueError("Smoothing step 'snap_to_touch' needs the 'touches' component under config['components']")
     if config["smoothing"].get("dead_handling", "gap") not in ("gap", "split"):
         raise ValueError("smoothing.dead_handling must be 'gap' or 'split'")
 
@@ -449,6 +809,12 @@ def build_context(df: pd.DataFrame, config: dict) -> Context:
     needed = set(BASE_COLUMNS)
     for name in config["components"]:
         needed.update(COMPONENTS[name][1])
+    extra = []                                   # columns named in a component's params, e.g. team_speed_columns
+    for params in config["components"].values():
+        for key, value in params.items():
+            if key.endswith("_columns") and isinstance(value, (list, tuple)):
+                extra += [c for c in value if c not in extra]
+    needed.update(extra)
     wants_speed = "{n}_s" in needed
     needed.discard("{n}_s")
     missing = [c for c in sorted(needed) if c not in df]
@@ -468,13 +834,13 @@ def build_context(df: pd.DataFrame, config: dict) -> Context:
     ordered["video_frame"] = video_frame[order]
     sequences = _sequences(ordered)
     numeric_columns = [c for c in ("min_team_a_dist", "min_team_b_dist", "ball_x", "ball_y", "sp_since", *TAG_COLUMNS)
-                       if c in needed]
+                       if c in needed] + extra
     if wants_speed:
         numeric_columns += speed_columns
     numeric = ordered[numeric_columns].apply(pd.to_numeric, errors="raise")
     if np.isinf(numeric.to_numpy(dtype=float)).any():
         raise ValueError("Hybrid input numeric values must be finite when present")
-    nonneg = [c for c in ("min_team_a_dist", "min_team_b_dist", *speed_columns) if c in numeric]
+    nonneg = [c for c in ("min_team_a_dist", "min_team_b_dist", *speed_columns, *extra) if c in numeric]
     if nonneg and (numeric[nonneg] < 0).any().any():
         raise ValueError("Hybrid distances and player speeds must be non-negative")
     for column in TAG_COLUMNS:
@@ -513,20 +879,46 @@ def select_labels(components: dict, selection: dict):
     return labels, source
 
 
+def _extend_dead(dead, ctx, lead_s, trail_s):
+    """Grow every run of D by lead_s seconds before it and trail_s seconds after it (never across a period boundary).
+    The dead-ball detectors use centered +-1 s windows, so they switch on ~1 s after play stopped; dead_lead_s ~ 1.0
+    compensates that delay."""
+    for name, v in (("dead_lead_s", lead_s), ("dead_trail_s", trail_s)):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not v >= 0:
+            raise ValueError("smoothing.%s must be a number >= 0" % name)
+    lead, trail = int(round(lead_s * ctx.fps)), int(round(trail_s * ctx.fps))
+    if not (lead or trail) or not dead.any():
+        return dead
+    out = dead.copy()
+    for sequence in ctx.sequences:
+        local = dead[sequence]
+        edges = np.diff(np.r_[False, local, False].astype(int))
+        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        grown = local.copy()
+        for st, en in zip(starts, ends):
+            grown[max(st - lead, 0):min(en + trail, len(local))] = True
+        out[sequence] = grown
+    return out
+
+
 def smooth_labels(selected: np.ndarray, ctx: Context, smoothing: dict):
     """Stage 3 - apply the smoothing steps in order, then write D back on the dead frames.
 
+    dead_lead_s / dead_trail_s (default 0): seconds by which every D run is grown before / after (see _extend_dead).
     dead_handling "gap": D frames are treated as X while smoothing (a possession can be merged across a stoppage).
     dead_handling "split": D frames cut the labels into blocks, each smoothed on its own.
     -> (smoothed, final)
     """
-    dead = selected == "D"
+    dead = _extend_dead(selected == "D", ctx, smoothing.get("dead_lead_s", 0.0), smoothing.get("dead_trail_s", 0.0))
     labels = selected.copy()
     if smoothing.get("dead_handling", "gap") == "gap":
         labels[dead] = "X"
     for step in smoothing["steps"]:
         fn = SMOOTHERS[step["type"]]
-        labels = _per_block(labels, ctx.sequences, lambda local, fn=fn, step=step: fn(local, step, ctx))
+        if step["type"] in INDEXED_SMOOTHERS:
+            labels = _per_block(labels, ctx.sequences, lambda local, index, fn=fn, step=step: fn(local, step, ctx, index))
+        else:
+            labels = _per_block(labels, ctx.sequences, lambda local, index, fn=fn, step=step: fn(local, step, ctx))
     final = labels.copy()
     final[dead] = "D"
     return labels, final
@@ -568,7 +960,13 @@ class HybridResult:
         return pd.Series(self.source).value_counts(normalize=True).round(4)
 
 
+def _as_config(config: dict) -> dict:
+    """Accept either the new nested config or the old flat parameter dict of the previous hybrid_possession.py."""
+    return config if "components" in config else config_from_legacy_params(config)
+
+
 def run(df: pd.DataFrame, config: dict) -> HybridResult:
+    config = _as_config(config)
     ctx = build_context(df, config)
     components = compute_components(ctx, config)
     selected, source = select_labels(components, config["selection"])
@@ -580,6 +978,7 @@ def run(df: pd.DataFrame, config: dict) -> HybridResult:
 
 def features(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """Kedro node: just the component features (hp_<name>, H/A/X, D for dead_ball), same row order as the input."""
+    config = _as_config(config)
     ctx = build_context(df, config)
     result = HybridResult(config, ctx, compute_components(ctx, config), None, None, None, None, None)
     out = result.components_table()

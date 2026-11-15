@@ -96,21 +96,40 @@ HYBRID_PARAMS = {
                 "kick_off_after_goal": 4.0,
             },
         },
+        # NEW 1/3 - components: add after "dead_ball", still inside "components"
+        "physical_dead": {"still_distance_m": 0.5, "slow_speed_mps": 1.0, "slow_window_s": 5.0,
+                          "slow_top_k": 5, "min_tracked_players": 5, "agree_with": ["slow"],
+                          "min_duration_s": 5.0, "merge_gap_s": 2.0},
+        "touches": {
+            "window_frames": 3, "min_delta_mps": 3.0, "peak_s": 0.4,
+            "max_player_dist_m": 2.0, "team_margin_m": 0.5,
+        },
+        "last_touch": {
+            "window_frames": 3, "min_delta_mps": 3.0, "peak_s": 0.4,
+            "max_player_dist_m": 2.0, "team_margin_m": 0.5, "hold_s": 4.0,
+        },
+        # @15.11 - incorporate "ball_lost" into hybrid pipeline"
+        "ball_lost": {"min_s": 5.0, "max_s": 20.0, "min_tracked_players": 5,
+                "max_median_speed_mps": 2.0},
     },
     "selection": {
         "rules": [                      # first match wins, top to bottom
             {"use": "dead_ball"},
+            {"use": "ball_lost"},
+            # {"use": "physical_dead"},   # NEW 2/3 - right after dead_ball => not helpful
             {"use": "clear_geometry"},
-            {"use": "geometry"},        # geometry above tags = your geometry_first: True
+            # {"use": "last_touch"},      # NEW 2/3 - after clear_geometry, before geometry => not helpful
+            {"use": "geometry"},
             {"use": "tags"},
             {"use": "hmm"},
         ]
     },
     "smoothing": {
-        "dead_handling": "gap",         # "split" = the old split_at_dead
+        "dead_handling": "gap",
         "steps": [
             {"type": "majority_vote", "half_window": 50},
             {"type": "merge_short", "min_possession_s": 3.0},
+            {"type": "snap_to_touch", "max_shift_s": 3.0},   # NEW 3/3 - last step, needs "touches" above
         ],
     },
 }
