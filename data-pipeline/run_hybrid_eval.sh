@@ -4,11 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# python main.py --pipeline hmm
-python main.py
+# python main.py
+python main.py --pipeline hmm
 mkdir -p ../evaluation/results
 cp output/hybrid_results.csv ../evaluation/results/hybrid_results.csv
 python ../evaluation/run_evaluation.py --bootstrap 1000
+python visualization/plot_overlap.py --pred output/hybrid_results.csv --gt ../evaluation/gt/BAR-ATH_possession_gt_public.csv --tags output/BAR-ATH_tactical_smart_tagging.csv --out output/overlap.png --html output/overlap.html
 
 SCOREBOARD="../evaluation/scoreboard.csv"
 if [ ! -f "$SCOREBOARD" ]; then
