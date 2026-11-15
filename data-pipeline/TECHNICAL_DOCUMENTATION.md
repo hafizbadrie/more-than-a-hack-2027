@@ -144,34 +144,48 @@ The current requirements file specifies minimum package versions rather than a f
 
 ### 5.2 Input files
 
-Keep the match data outside the public repository. The pipeline expects the prepared inputs at:
+The pipeline uses the tactical assets provided by the challenge organiser. Unpack the data bundle
+under `data/`; no pre-prepared CSV input files are required:
 
 ```text
 data/
 └── tactical/
-    ├── BAR-ATH_tactical_ds.csv
-    └── BAR-ATH_smart_tagging_ds.csv
+    ├── BAR-ATH_tactical_atd.xml
+    ├── BAR-ATH_tactical_atd.txt
+    └── BAR-ATH_tactical_smart_tagging.xml
 ```
+
+The `data_preparation` stage converts these source files into CSVs used internally by the
+subsequent pipeline stages.
 
 ### 5.3 Execute the pipeline
 
-Run both stages sequentially:
+Run all three stages sequentially:
 
 ```bash
 python data-pipeline/main.py
 ```
 
-Run either stage independently:
+Run each stage independently, in order:
 
 ```bash
-# Stage 1: clean tracking and generate features
-python data-pipeline/main.py --pipeline cleansing
+# Stage 1: convert the organiser-provided source files to CSV
+python data-pipeline/main.py --pipeline data_preparation
 
-# Stage 2: run HMM and hybrid inference using the existing feature cache
+# Stage 2: clean tracking and generate features
+python data-pipeline/main.py --pipeline features
+
+# Stage 3: generate the submission-format hybrid results using the existing feature cache
 python data-pipeline/main.py --pipeline hmm
 ```
 
-The `hmm` stage reads the existing processed feature file. Run `cleansing` first if that file needs to be created or refreshed.
+The `hmm` stage reads the existing processed feature file. Run `features` first if that file needs
+to be created or refreshed; run `data_preparation` first if its input CSVs need to be created or
+refreshed from the organiser-provided source files.
+
+Running `python data-pipeline/main.py --pipeline hmm` generates
+`data-pipeline/output/hybrid_results.csv` with the submission-ready `frame,label` format and all
+199,319 frames in order.
 
 ### 5.4 Outputs
 
@@ -180,22 +194,27 @@ The pipeline writes outputs under `data-pipeline/output/`:
 | File                         | Contents                                                                      |
 | ---------------------------- | ----------------------------------------------------------------------------- |
 | `tactical_processed.csv`     | Tracking rows enriched with engineered features                               |
-| `hybrid_results.csv`         | Frame-level HMM and hybrid possession results for the available tracking rows |
+| `hybrid_results.csv`         | Submission-format frame-level hybrid possession labels (`frame,label`)         |
 | `hmm_feature_importance.csv` | HMM feature-separation diagnostics                                            |
 | `hmm_convergence.csv`        | HMM convergence history                                                       |
 | `hmm_states.csv`             | Learned-state mapping and transition diagnostics                              |
 
-The hybrid output is an intermediate result. It is not automatically a valid challenge submission because the challenge requires exactly 199,319 consecutive frames.
+### 5.5 Copy and validate the submission file
 
-### 5.5 Build and validate the submission file
-
-After the separate full-timeline assembly step has produced `<team_name>.csv`, validate that exact file:
+Copy the generated file to the evaluation results folder:
 
 ```bash
-python evaluation/validate_submission.py <team_name>.csv
+cp data-pipeline/output/hybrid_results.csv evaluation/results/merah_putih_results.csv
 ```
 
-The validator checks the required `frame,label` header, all 199,319 frames in order, allowed labels and absence of blank cells. Do not submit `hybrid_results.csv` directly unless it has first been transformed into the required full-timeline format and passes validation.
+Validate the copied file before submission:
+
+```bash
+python evaluation/validate_submission.py evaluation/results/merah_putih_results.csv
+```
+
+The validator checks the `frame,label` header, all 199,319 frames in order, allowed labels and
+absence of blank cells. It checks the file format, not whether the predicted labels are accurate.
 
 ---
 
