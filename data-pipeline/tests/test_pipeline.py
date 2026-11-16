@@ -23,6 +23,15 @@ from stages.team_focused_features_extraction import _ball_coordinates_in_metres
 
 
 class PipelineTests(unittest.TestCase):
+    def test_centroid_dead_is_enabled_by_default(self):
+        with patch.object(sys, "argv", ["main.py", "--pipeline", "hybrid"]), \
+                patch.object(pipeline_main, "SequentialRunner") as runner:
+            pipeline_main.main()
+            catalog = runner.return_value.run.call_args.args[1]
+            config = catalog.load("params:hybrid")
+        self.assertEqual(config["selection"]["rules"][1], {"use": "centroid_dead"})
+        self.assertEqual(config["components"]["centroid_dead"], pipeline_main.HYBRID_PARAMS["components"]["centroid_dead"])
+
     def test_pipeline_boundaries_and_default(self):
         preparation = pipeline_main.build_data_preparation_pipeline()
         cleansing = pipeline_main.build_features_pipeline()

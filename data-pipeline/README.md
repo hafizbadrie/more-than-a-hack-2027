@@ -180,7 +180,8 @@ The hybrid combines the HMM fallback with the geometry, tag, and smoothing appro
 standalone [smart-tags submission](../smart-tags/combined_submission.py). The implementation
 is adapted to the pipeline's input frame table rather than importing the standalone runner,
 which assumes a complete 199,319-frame match. It retains this pipeline's more conservative,
-set-piece-gated still/slow/missing-ball stoppage rule. Its rules in
+set-piece-gated still/slow/missing-ball stoppage rule and enables an experimental
+centroid-motion rule for untagged stoppages. Its rules in
 [stages/hybrid_possession.py](stages/hybrid_possession.py) are:
 
 1. Smooth nearest-team geometry labels over `smoothing_half_window` frames. By default, a player
@@ -200,6 +201,9 @@ set-piece-gated still/slow/missing-ball stoppage rule. Its rules in
    `dead_min_duration_s`. Finally, smooth H/A labels with a centred majority vote and merge
    possessions shorter than `min_possession_s`. D and X labels are preserved; smoothing does
    not cross dead-ball, period, or missing-frame boundaries, and ties keep the original label.
+4. The `centroid_dead` component also detects sustained low motion of both team centroids,
+   independent of set-piece tags. Its threshold was explored on the public window and needs
+   independent validation; see [HYBRID_PIPELINE.md](HYBRID_PIPELINE.md).
 
 `HYBRID_PARAMS` in [main.py](main.py) contains the match-specific pitch, frame rate,
 thresholds, set-piece cutoffs, and minimum-run settings. The cutoff values are based on the

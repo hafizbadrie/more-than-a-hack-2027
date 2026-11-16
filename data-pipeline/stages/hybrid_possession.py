@@ -4,7 +4,7 @@ The method has three parts, each driven by the config, so you can add, remove or
 touching the code of the others:
 
     1. COMPONENTS   one feature (one label per frame) per approach:  hmm, geometry, clear_geometry, tags, dead_ball,
-                    physical_dead, ball_lost, touches, last_touch.  A component says H, A (or D for the dead-ball ones) where it has an
+                    physical_dead, centroid_dead, ball_lost, touches, last_touch.  A component says H, A (or D for the dead-ball ones) where it has an
                     opinion and X where it abstains.  `touches` marks the frames where a player plays the ball; it is
                     not a selection rule but feeds the smoothing step snap_to_touch.
     2. SELECTION    an ordered list of rules: for every frame, the first rule whose component has an opinion (and whose
@@ -417,6 +417,38 @@ def dead_ball_component(ctx, params):
     dead = _filter_dead_runs(dead_raw, ctx.sequences, int(round(min_s * fps)), int(round(gap_s * fps)))
     ctx.signals.update(still=still, slow=slow, outside=outside, event_window=event_window, dead_raw=dead_raw,
                        team_still=team_still)
+    return np.where(dead, "D", "X").astype("<U1")
+
+
+@component("centroid_dead")
+def centroid_dead_component(ctx, params):
+    """Detect sustained low movement of both tracked team centroids."""
+    speed_cols = params["team_speed_columns"]
+    tracked_cols = params["team_tracked_columns"]
+    for columns in (speed_cols, tracked_cols):
+        if (not isinstance(columns, (list, tuple)) or len(columns) != 2
+                or not all(isinstance(col, str) and col for col in columns)
+                or len(set(columns)) != 2):
+            raise ValueError("Hybrid centroid_dead requires two distinct columns per team")
+    threshold = _positive(params, "max_speed_mps")
+    window_s = _positive(params, "window_s")
+    min_s = _positive(params, "min_duration_s", strict=False)
+    gap_s = _positive(params, "merge_gap_s", strict=False)
+    min_players = params["min_tracked_players"]
+    if isinstance(min_players, bool) or not isinstance(min_players, int) or min_players < 1:
+        raise ValueError("Hybrid centroid_dead min_tracked_players must be a positive integer")
+
+    enough_players = ctx.numeric[list(tracked_cols)].ge(min_players).all(axis=1)
+    speeds = ctx.numeric[list(speed_cols)].max(axis=1, skipna=False).where(enough_players)
+    size = 2 * int(round(window_s * ctx.fps)) + 1
+    raw = np.zeros(len(ctx.ordered), dtype=bool)
+    for seq in ctx.sequences:
+        smooth = speeds.iloc[seq].reset_index(drop=True).rolling(
+            size, center=True, min_periods=size // 2 + 1
+        ).median()
+        raw[seq] = (smooth < threshold).to_numpy()
+    dead = _filter_dead_runs(raw, ctx.sequences, int(round(min_s * ctx.fps)), int(round(gap_s * ctx.fps)))
+    ctx.signals["centroid_dead_raw"] = raw
     return np.where(dead, "D", "X").astype("<U1")
 
 

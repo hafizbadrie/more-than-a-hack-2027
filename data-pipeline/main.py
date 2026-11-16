@@ -96,6 +96,15 @@ HYBRID_PARAMS = {
                 "kick_off_after_goal": 4.0,
             },
         },
+        "centroid_dead": {
+            "team_speed_columns": ["team_centroid_speed_barcelona", "team_centroid_speed_atletic_club"],
+            "team_tracked_columns": ["team_tracked_players_barcelona", "team_tracked_players_atletic_club"],
+            "min_tracked_players": 5,
+            "max_speed_mps": 0.6,
+            "window_s": 5.0,
+            "min_duration_s": 5.0,
+            "merge_gap_s": 2.0,
+        },
         # NEW 1/3 - components: add after "dead_ball", still inside "components"
         "physical_dead": {"still_distance_m": 0.5, "slow_speed_mps": 1.0, "slow_window_s": 5.0,
                           "slow_top_k": 5, "min_tracked_players": 5, "agree_with": ["slow"],
@@ -115,6 +124,7 @@ HYBRID_PARAMS = {
     "selection": {
         "rules": [                      # first match wins, top to bottom
             {"use": "dead_ball"},
+            {"use": "centroid_dead"},
             {"use": "ball_lost"},
             # {"use": "physical_dead"},   # NEW 2/3 - right after dead_ball => not helpful
             {"use": "clear_geometry"},
@@ -133,7 +143,6 @@ HYBRID_PARAMS = {
         ],
     },
 }
-
 
 def build_features_pipeline():
     return pipeline(

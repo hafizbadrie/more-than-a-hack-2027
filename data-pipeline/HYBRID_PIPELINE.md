@@ -55,6 +55,18 @@ root with:
 python data-pipeline/main.py  --pipeline hybrid
 ```
 
+The default hybrid configuration detects untagged stoppages using the existing
+team centroid speeds and tracked-player counts in
+`output/tactical_processed.csv`. It takes the larger centroid speed when at
+least five players per team are tracked, then uses a centered ±5-second median
+with at least 126 valid observations. Values below 0.6 m/s form candidate dead
+frames; gaps of up to two seconds are merged and runs shorter than five seconds
+are removed. It runs before possession selection. The centered window uses
+future frames, can miss stoppage boundaries, and may flag slow live play. Its
+threshold was explored on the public ground-truth window and requires
+independent validation. Remove the `centroid_dead` selection rule in
+`HYBRID_PARAMS` to disable it.
+
 The output contains the cached input frames, not necessarily every frame in the
 video, so it is not by itself a complete submission. The pipeline also writes
 HMM state, feature-importance, and convergence diagnostics under

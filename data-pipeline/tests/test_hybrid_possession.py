@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from stages.ball_focused_features_extraction import (
     extract_player_density, mask_unobserved_player_density,
 )
-from stages.hybrid_possession import add_hybrid_possession
+from stages.hybrid_possession import add_hybrid_possession, run
 from stages.export import export_hybrid_evaluation
 
 
@@ -179,6 +179,59 @@ class HybridTests(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 add_hybrid_possession(broken, PARAMS)
+
+
+class CentroidDeadTests(unittest.TestCase):
+    def setUp(self):
+        self.params = {
+            "team_speed_columns": ["home_speed", "away_speed"],
+            "team_tracked_columns": ["home_tracked", "away_tracked"],
+            "min_tracked_players": 5,
+            "max_speed_mps": 0.6,
+            "window_s": 1.0,
+            "min_duration_s": 5.0,
+            "merge_gap_s": 2.0,
+        }
+        self.config = {
+            "fps": 1, "pitch_m": [105, 68],
+            "components": {"centroid_dead": self.params},
+            "selection": {"rules": [{"use": "centroid_dead"}]},
+            "smoothing": {"steps": []},
+        }
+
+    def test_sustained_slow_teams_merge_gap_but_require_tracking(self):
+        source = pd.DataFrame({
+            "period_id": [1] * 14 + [2] * 14,
+            "video_frame": list(range(14)) + list(range(30, 44)),
+            "home_speed": [0.2] * 6 + [1.0] * 2 + [0.2] * 20,
+            "away_speed": [0.3] * 28,
+            "home_tracked": [5] * 28,
+            "away_tracked": [5] * 14 + [4] * 14,
+        })
+        result = run(source, self.config)
+        self.assertEqual(result.final.tolist(), ["D"] * 14 + ["X"] * 14)
+
+    def test_missing_speed_and_sequence_boundaries_do_not_create_stoppage(self):
+        source = pd.DataFrame({
+            "period_id": [1] * 4 + [2] * 4 + [3] * 6,
+            "video_frame": list(range(4)) + list(range(4, 8)) + list(range(20, 26)),
+            "home_speed": [0.2] * 14,
+            "away_speed": [0.2] * 8 + [np.nan] * 6,
+            "home_tracked": [5] * 14,
+            "away_tracked": [5] * 14,
+        })
+        result = run(source, self.config)
+        self.assertEqual(result.final.tolist(), ["X"] * 14)
+
+    def test_invalid_column_configuration_is_rejected(self):
+        source = pd.DataFrame({
+            "period_id": [1], "video_frame": [0],
+            "home_speed": [0.2], "away_speed": [0.2],
+            "home_tracked": [5], "away_tracked": [5],
+        })
+        self.params["team_speed_columns"] = ["home_speed", "home_speed"]
+        with self.assertRaisesRegex(ValueError, "two distinct columns"):
+            run(source, self.config)
 
 
 if __name__ == "__main__":
