@@ -29,7 +29,7 @@ The HMM captures relationships across multiple signals and neighbouring frames. 
 
 The result is one of four labels: `H` (home), `A` (away), `D` (dead ball) or `X` (unknown/abstain).
 
-Details: the HMM is described in [`HMM_PIPELINE.md`](HMM_PIPELINE.md), the hybrid decision layer (configuration, parameters, stages) in [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md).
+Details: the HMM and its combination with the rule-based hybrid decision layer are described in [`HYBRID_PIPELINE.md`](HYBRID_PIPELINE.md); configuration, parameters, and stages are also covered in [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md).
 
 ## 2. Assets used and how
 
@@ -56,7 +56,7 @@ The HMM uses selected ball, player, team-shape and Smart Tagging features. Signe
 - `A`: frames in the lower 30%, outside set-piece windows.
 - `D`: frames inside a set-piece window with usable model observations.
 
-The model then estimates its parameters using Expectation-Maximisation and decodes the sequence using Viterbi. Learned states are mapped back to `H`, `A` and `D` using their distance to the initial anchor means. Missing feature dimensions are marginalised during decoding. A frame with no observed HMM feature is labelled `X`. Full details (features, anchors, parameters, diagnostics) are in [`HMM_PIPELINE.md`](HMM_PIPELINE.md).
+The model then estimates its parameters using Expectation-Maximisation and decodes the sequence using Viterbi. Learned states are mapped back to `H`, `A` and `D` using their distance to the initial anchor means. Missing feature dimensions are marginalised during decoding. A frame with no observed HMM feature is labelled `X`. Full details (features, anchors, parameters, diagnostics) are in [`HYBRID_PIPELINE.md`](HYBRID_PIPELINE.md).
 
 The HMM's `D` and `X` predictions are not used by the hybrid selector; only its `H` and `A` predictions are eligible as fallback decisions. Dead-ball labels come from the dedicated detectors described below.
 
@@ -212,14 +212,14 @@ python data-pipeline/main.py --pipeline data_preparation
 python data-pipeline/main.py --pipeline features
 
 # Stage 3: generate the submission-format hybrid results using the existing feature cache
-python data-pipeline/main.py --pipeline hmm
+python data-pipeline/main.py  --pipeline hybrid
 ```
 
 The `hmm` stage reads the existing processed feature file. Run `features` first if that file needs
 to be created or refreshed; run `data_preparation` first if its input CSVs need to be created or
 refreshed from the organiser-provided source files.
 
-Running `python data-pipeline/main.py --pipeline hmm` generates
+Running `python data-pipeline/main.py  --pipeline hybrid` generates
 `data-pipeline/output/hybrid_results.csv` with the submission-ready `frame,label` format and all
 199,319 frames in order.
 
@@ -265,4 +265,4 @@ python -m pytest tests/test_hybrid_pipeline.py
 **Project:** More Than A Hack 2027  
 **Primary pipeline:** `data-pipeline/main.py`  
 **Hybrid implementation reference:** `data-pipeline/stages/hybrid_possession.py` and `HYBRID_POSSESSION.md`  
-**HMM implementation reference:** `HMM_PIPELINE.md`
+**HMM and hybrid pipeline reference:** `HYBRID_PIPELINE.md`

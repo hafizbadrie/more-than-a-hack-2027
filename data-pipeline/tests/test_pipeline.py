@@ -17,7 +17,7 @@ from data_preparation import (
     convert_atd_to_dataframe,
     convert_smart_tagging_to_dataframe,
 )
-from hmm_pipeline import prepare_cached_density
+from hybrid_pipeline import prepare_cached_density
 from stages.hmm_possession import FEATURES, add_hmm_possession
 from stages.team_focused_features_extraction import _ball_coordinates_in_metres
 
@@ -26,17 +26,17 @@ class PipelineTests(unittest.TestCase):
     def test_pipeline_boundaries_and_default(self):
         preparation = pipeline_main.build_data_preparation_pipeline()
         cleansing = pipeline_main.build_features_pipeline()
-        hmm = pipeline_main.build_hmm_pipeline()
+        hybrid = pipeline_main.build_hybrid_pipeline()
         combined = pipeline_main.build_pipeline()
         self.assertIn("raw_tactical", preparation.outputs())
         self.assertIn("raw_smart_tag", preparation.outputs())
         self.assertIn("raw_tactical", cleansing.inputs())
         self.assertNotIn("final", cleansing.inputs())
-        self.assertIn("final", hmm.inputs())
-        self.assertNotIn("raw_tactical", hmm.inputs())
+        self.assertIn("final", hybrid.inputs())
+        self.assertNotIn("raw_tactical", hybrid.inputs())
         self.assertNotIn("raw_tactical", combined.inputs())
         self.assertNotIn("final", combined.inputs())
-        self.assertEqual(combined.nodes, (preparation + cleansing + hmm).nodes)
+        self.assertEqual(combined.nodes, (preparation + cleansing + hybrid).nodes)
 
         for args, expected in [
             ([], combined),
@@ -270,7 +270,7 @@ class PipelineTests(unittest.TestCase):
                 "params:hybrid": MemoryDataset(pipeline_main.HYBRID_PARAMS),
                 "hybrid_evaluation": CSVDataset(filepath=str(output), save_args={"index": False}),
             })
-            SequentialRunner().run(pipeline_main.build_hmm_pipeline(), catalog)
+            SequentialRunner().run(pipeline_main.build_hybrid_pipeline(), catalog)
             result = pd.read_csv(output)
             self.assertEqual(result.columns.tolist(), ["frame", "label"])
             self.assertEqual(result["frame"].tolist(), list(range(len(frame))))

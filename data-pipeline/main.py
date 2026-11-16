@@ -13,7 +13,7 @@ from kedro.pipeline import node, pipeline
 from kedro.runner import SequentialRunner
 from kedro_datasets.pandas import CSVDataset
 from data_preparation import build_data_preparation_pipeline
-from hmm_pipeline import build_hmm_pipeline
+from hybrid_pipeline import build_hybrid_pipeline
 from stages.ball_focused_features_extraction import (
     extract_ball_acceleration,
     extract_ball_direction_change,
@@ -329,7 +329,7 @@ def build_features_pipeline():
 
 
 def build_pipeline():
-    return build_data_preparation_pipeline() + build_features_pipeline() + build_hmm_pipeline()
+    return build_data_preparation_pipeline() + build_features_pipeline() + build_hybrid_pipeline()
 
 
 def build_catalog():
@@ -398,7 +398,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--pipeline",
-        choices=("all", "features", "hmm", "data_preparation"),
+        choices=("all", "features", "hybrid", "data_preparation"),
         default="all",
         help="pipeline to run (default: all; HMM alone reads the existing feature cache)",
     )
@@ -406,7 +406,7 @@ def main():
     builders = {
         "data_preparation": build_data_preparation_pipeline,
         "features": build_features_pipeline,
-        "hmm": build_hmm_pipeline,
+        "hybrid": build_hybrid_pipeline,
         "all": build_pipeline,
         
     }

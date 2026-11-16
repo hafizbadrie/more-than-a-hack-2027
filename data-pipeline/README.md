@@ -26,7 +26,7 @@ tactical_processed.csv ──▶ HMM ──▶ hybrid possession ──▶ hybri
 | export | [stages/export.py](stages/export.py) | Final shaping of the output |
 
 The cleansing pipeline and catalog are defined in [main.py](main.py); the HMM and
-hybrid nodes are defined in [hmm_pipeline.py](hmm_pipeline.py).
+hybrid nodes are defined in [hybrid_pipeline.py](hybrid_pipeline.py).
 
 The ingest stage exposes `video_frame` as a zero-based column. For the existing tactical CSV,
 it converts the one-based source frame counter to `video_frame`; inputs already using
@@ -46,7 +46,7 @@ Choose a pipeline independently:
 ```bash
 python data-pipeline/main.py --pipeline data_preparation
 python data-pipeline/main.py --pipeline cleansing
-python data-pipeline/main.py --pipeline hmm
+python data-pipeline/main.py  --pipeline hybrid
 ```
 
 `data_preparation` reads the tactical ATD XML/TXT and Smart Tagging XML assets using

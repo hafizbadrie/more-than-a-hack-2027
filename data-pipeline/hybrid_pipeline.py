@@ -17,7 +17,7 @@ def prepare_cached_density(df, ball_params, hmm_params):
     return df.copy()
 
 
-def build_hmm_pipeline():
+def build_hybrid_pipeline():
     return pipeline(
         [
             node(

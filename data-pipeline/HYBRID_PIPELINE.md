@@ -1,15 +1,36 @@
-# HMM and Hybrid Possession Pipeline
+# Hybrid Possession Pipeline
 
-This document explains the concept, rationale, and execution logic of
-[`hmm_pipeline.py`](./hmm_pipeline.py). The pipeline fits a Hidden Markov Model
-(HMM) to tracking and event features, then combines its possession estimates
-with explicit geometry, smart-tag, and dead-ball rules. The HMM provides
-temporally consistent estimates; the hybrid rules use interpretable evidence
-to override or supplement those estimates.
+This document explains the concept, rationale, and execution logic of the
+combined pipeline in [`hybrid_pipeline.py`](./hybrid_pipeline.py). It combines
+two complementary approaches: a Hidden Markov Model (HMM) estimates possession
+from tracking and event features across time, while explicit rules use geometry,
+smart tags, and dead-ball evidence to resolve or override those estimates.
+
+The HMM's H/A estimate is the starting fallback, not the final answer in every
+frame. By default, available geometry takes precedence; an exclusive smart tag
+is used when geometry is unavailable. Independently detected dead-ball evidence
+sets the output to D, while unresolved frames remain X. This makes the final
+`hybrid_possession` output a rule-informed result that can use the HMM's
+temporal context when direct evidence is insufficient. The HMM's own D state is
+not treated as proof of a dead ball.
+
+## How the approaches combine
+
+- **HMM inference:** estimates H, A, D, or X from observed features and temporal
+  transitions. Its H/A estimate provides a fallback when the rule-based
+  evidence does not decide ownership.
+- **Rule-based ownership:** compares each team's distance to the ball when the
+  ball is in bounds, and uses smart tags when exactly one team has possession
+  evidence. The configured `geometry_first` setting controls precedence; the
+  current default makes available geometry authoritative over tags.
+- **Independent dead-ball rules:** detect out-of-bounds and qualifying
+  set-piece frames. These are marked D regardless of the HMM's latent D state.
+- **Final temporal cleanup:** smooths labels and merges short possession spells
+  without crossing dead-ball, period, or missing-frame boundaries.
 
 ## What the pipeline runs
 
-`build_hmm_pipeline()` defines four Kedro nodes, in order:
+`build_hybrid_pipeline()` defines four Kedro nodes, in order:
 
 1. **Correct cached density (optional).** `prepare_cached_density` copies the
    input table and, when `correct_cached_density` is true, masks cached player
@@ -26,11 +47,12 @@ to override or supplement those estimates.
    `video_frame` as `frame` and `hybrid_possession` as `label` to
    `output/hybrid_results.csv`.
 
-The HMM pipeline uses the existing `output/without_hmm.csv` feature cache; it
-does not run feature extraction itself. Run it from the repository root with:
+The `hmm` pipeline option uses the existing `output/without_hmm.csv` feature
+cache; it does not run feature extraction itself. Run it from the repository
+root with:
 
 ```bash
-python data-pipeline/main.py --pipeline hmm
+python data-pipeline/main.py  --pipeline hybrid
 ```
 
 The output contains the cached input frames, not necessarily every frame in the
@@ -38,7 +60,7 @@ video, so it is not by itself a complete submission. The pipeline also writes
 HMM state, feature-importance, and convergence diagnostics under
 `data-pipeline/output/`.
 
-## HMM: three latent possession states
+## HMM component: three latent possession states
 
 ### Why use an HMM?
 
@@ -106,7 +128,7 @@ The HMM's D state is an estimated latent state. The hybrid stage does not use
 that D value as proof of a dead ball; it detects D separately from its
 configured dead-ball evidence.
 
-## Hybrid rule-based possession
+## Rule-based hybrid possession
 
 The hybrid combines several evidence sources with explicit precedence. Its
 configured values are in `HYBRID_PARAMS` in
