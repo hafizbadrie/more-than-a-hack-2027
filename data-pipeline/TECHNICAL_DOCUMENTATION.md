@@ -23,13 +23,13 @@ These features provide different views of the same situation: individual proximi
 The second stage has two complementary parts:
 
 1. **Unsupervised temporal model:** A three-state, diagonal-Gaussian Hidden Markov Model (HMM) estimates home possession (`H`), away possession (`A`) and a latent dead-ball state (`D`) from selected features. Weak spatial and set-piece anchors initialise the states; they are not ground-truth possession labels.
-2. **Hybrid decision layer:** A configurable rule system combines HMM predictions with geometric possession, Smart Tagging and two separate dead-ball detectors (set-piece based and ball-lost based). It selects one label per frame using an explicit priority order, applies temporal smoothing, and finally aligns each change of possession with the first touch of the team that gains the ball.
+2. **Hybrid decision layer:** A configurable rule system combines HMM predictions with geometric possession, Smart Tagging and three dead-ball detectors (set-piece/outside-pitch, team-centroid motion and ball-lost). It selects one label per frame using an explicit priority order, applies temporal smoothing, and finally aligns possession changes with qualifying touches where available.
 
 The HMM captures relationships across multiple signals and neighbouring frames. The hybrid layer makes the final decisions interpretable and allows strong, explicit evidence—such as a detected stoppage or a player very close to the ball—to take precedence over a statistical prediction.
 
 The result is one of four labels: `H` (home), `A` (away), `D` (dead ball) or `X` (unknown/abstain).
 
-Details: the HMM and its combination with the rule-based hybrid decision layer are described in [`HYBRID_PIPELINE.md`](HYBRID_PIPELINE.md); configuration, parameters, and stages are also covered in [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md).
+Details: the HMM and its combination with the rule-based hybrid decision layer are described in [`HYBRID_PIPELINE.md`](HYBRID_PIPELINE.md); the earlier hybrid reference is in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md).
 
 ## 2. Assets used and how
 
@@ -44,7 +44,7 @@ The executable pipeline does not consume a homography file or video stream: it d
 
 Smart Tagging intervals are contextual signals, not ground-truth possession labels. A set-piece tag identifies an event window; it does not, by itself, establish that play is stopped. No private ground-truth labels are used to fit the HMM or generate predictions.
 
-Dataset specifications and descriptions of the supplied assets are documented separately in [`DATA.md`](../DATA.md). The feature columns and the hybrid inputs are listed in [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md), section 2.
+Dataset specifications and descriptions of the supplied assets are documented separately in [`DATA.md`](../DATA.md). The feature columns and the hybrid inputs are listed in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 2.
 
 ## 3. Possession rules
 
@@ -80,7 +80,7 @@ Attacking transitions and other tag-derived features are also available to the H
 
 There is no dedicated player-control, duel or challenge classifier. A loose ball or contested challenge is therefore not assigned a special state. The system relies on the combination of proximity, ball movement, player density, relative velocity, team behaviour, tactical context and temporal modelling. If all applicable components abstain, the hybrid output remains `X`.
 
-Dead-ball detection is separate from the HMM and has two independent parts (parameters and signals: [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md), sections 1 and 3).
+Dead-ball detection is separate from the HMM and has three independent components. The current configuration is in `HYBRID_PARAMS` in [`main.py`](main.py).
 
 **Set-piece detector (`dead_ball`).** It labels a frame `D` when either:
 
@@ -92,28 +92,33 @@ Dead-ball detection is separate from the HMM and has two independent parts (para
 
 The current configuration uses 0.5 m for ball stillness, 0.7 m/s for median player speed, at least five tracked players for the speed signal, and a minimum dead-ball duration of 2 seconds. Dead-ball intervals separated by gaps of up to 2 seconds are merged. Set-piece windows are configured by restart type: corner 5.6 s, free kick 5.2 s, throw-in 5.8 s and kick-off after goal 4.0 s. These are heuristics; a restart tag alone does not establish that play is dead.
 
+**Team-centroid detector (`centroid_dead`).** This detector can identify an untagged stoppage even when the ball is tracked and moving. At each frame, it takes the greater of the two team centroid speeds if both speeds are available and each team has at least five tracked players. Within each consecutive-frame sequence and period, it calculates a centred median over ±5 seconds (251 frames at 25 fps), requiring at least 126 valid observations. A median strictly below 0.6 m/s is a candidate dead frame. Gaps of up to 2 seconds between candidates are filled, then runs shorter than 5 seconds are discarded. The detector outputs `D` for the remaining frames and `X` elsewhere.
+
+The tracking requirement applies to observations used in the rolling median, not necessarily every output frame; gap filling can also cover frames without sufficient tracking. The centred window uses future frames and is not suitable for real-time use. It can miss stoppage boundaries or mark slow live play as dead. The threshold was explored against the public ground-truth window and requires independent validation.
+
 **Ball-lost detector (`ball_lost`).** Most stoppages last 5-20 s, longer than the set-piece windows above, and the ball is often not tracked during them. On this match the ball is untracked for 43% of the frames, in three kinds of runs: short occlusions (under 2 s; none last 2-5 s), stoppage-sized runs (5-20 s; 93 runs, about 13% of the graded frames) and tracking outages (20 s up to several minutes; 74% of all untracked frames). A run of untracked ball is labelled `D` when:
 
 - its length is between 5 s and 20 s;
 - it does not touch the start or end of a gap-free stretch of frames (its true length would be unknown);
 - the median player speed inside the run is at most 2.0 m/s (players walk when play is stopped; without this ceiling live play with a lost ball was labelled dead too often).
 
-The bounds come from these whole-match, label-free statistics (the run-length distribution and the median player speed inside the 5-20 s runs: median 1.24 m/s, 90th percentile 2.52 m/s). Outages longer than 20 s are never labelled `D`, because the tracking data cannot say whether play was stopped.
+The bounds come from these whole-match, label-free statistics (the run-length distribution and the median player speed inside the 5-20 s runs: median 1.24 m/s, 90th percentile 2.52 m/s). This detector does not label outages longer than 20 s as `D`; another detector may still do so.
 
-**Not used.** A sustained-low-speed signal for dead ball anywhere in the match (`physical_dead`) is implemented and listed in the configuration but has no active rule: with the median player speed no threshold stays below 1% false positives on clearly live frames (live play is also slow), and with the mean of the five fastest players (below 1.0 m/s for 5 s) it fires on 0.67% of such frames, adds 154 s of dead ball and leaves the scores on the public slice unchanged. The same holds for an HMM-based dead-ball state (the HMM's `D` fires on 94% of live frames), for team-level motion (the slower team's speed gives AUC 0.85 against 0.84 for all players, and the difference between the teams carries no signal, AUC 0.54), and for lengthening dead stretches backwards in time.
+**Not used.** A sustained-low-speed signal for dead ball anywhere in the match (`physical_dead`) is implemented and listed in the configuration but has no active rule: with the median player speed no threshold stays below 1% false positives on clearly live frames (live play is also slow), and with the mean of the five fastest players (below 1.0 m/s for 5 s) it fires on 0.67% of such frames, adds 154 s of dead ball and leaves the scores on the public slice unchanged. The HMM's `D` state is also not selected (it fires on 94% of clearly live frames), and lengthening dead stretches backwards in time was not used. Earlier tests of team-motion signals did not use the current `centroid_dead` rule.
 
 ### 3.5 Hybrid selection and smoothing
 
 The hybrid layer uses ordered, first-match-wins selection:
 
 1. Dead-ball detection (set pieces)
-2. Ball-lost detection
-3. Clear geometry
-4. General geometry
-5. Smart Tagging
-6. HMM
+2. Team-centroid dead-ball detection
+3. Ball-lost detection
+4. Clear geometry
+5. General geometry
+6. Smart Tagging
+7. HMM
 
-The rules, their parameters and the stage-by-stage behaviour are specified in [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md), sections 1 and 3; section 4 there shows how to trace why a frame got its label. This is a priority system, not a weighted vote or confidence average. A component wins as soon as it provides a non-`X` opinion. If no component decides, the frame remains `X`.
+This is a priority system, not a weighted vote or confidence average. A component wins as soon as it provides a non-`X` opinion. Thus `centroid_dead` can assign `D` before geometry, tags or the HMM assign possession. If no component decides, the frame remains `X`. The earlier reference in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 4, shows how to trace why a frame got its label.
 
 After selection, the pipeline applies three smoothing steps:
 
@@ -125,19 +130,22 @@ The current `dead_handling="gap"` setting temporarily treats dead-ball frames as
 
 ### 3.6 Options evaluated and not used
 
-The full table with the measured numbers is in [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md), section 8.
+The earlier table of measured options is in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 8; it predates the current centroid detector.
 
-Options were accepted only by a rule fixed in advance and independent of the labels: the signal may fire on at most 1.0% of clearly live frames (ball inside the pitch, one team's nearest player within 1.5 m and the other's beyond 3.0 m, for at least 0.5 s), and among the accepted settings the one adding most dead-ball time was preferred. The public slice (frames 11185-18684) was used as a pipeline check; it contains only 17 possessions and 4 dead-ball stretches, so one spell changes the headline score by about 0.03 and small differences are noise. No hand labels are used.
+Earlier options were assessed using a label-independent rule: the signal could fire on at most 1.0% of clearly live frames (ball inside the pitch, one team's nearest player within 1.5 m and the other's beyond 3.0 m, for at least 0.5 s), with preference for more dead-ball time among accepted settings. The current `centroid_dead` threshold was instead explored using the public ground-truth slice (frames 11185-18684), so it has not been independently validated. The slice contains only 17 possessions and 4 dead-ball stretches; one spell can materially change the headline score.
 
 | Option | Outcome |
 |---|---|
 | Snap to touch | kept; the best single addition |
 | Ball-lost detector (5-20 s, ceiling 2.0 m/s) | kept; dead-ball recall on the slice 0.16 -> 0.40, precision 0.70 |
+| Team-centroid detector (`centroid_dead`) | enabled; public-slice dead-ball recall 0.404 -> 0.779, precision 0.699 -> 0.759 |
 | Last-touch holding of the ball in flight (`last_touch`) | rejected; it changed the possession count and worsened latency and home share |
 | Sustained slow-speed dead ball anywhere (`physical_dead`) | not used; neutral on the slice |
-| HMM `D` state, team-level motion, earlier start of dead stretches | rejected, see 3.4 and below |
+| HMM `D` state and earlier start of dead stretches | rejected, see 3.4 and below |
 
 Disclosure: the speed ceiling of the ball-lost detector was added after a first check on the public slice showed that without it dead-ball precision was 0.60. The ceiling value itself (2.0 m/s) lies near the upper end of the speed range of the 5-20 s runs measured on the whole match. Starting dead stretches 1 s or 2 s earlier cost 8 and 15 points of dead-ball precision on the slice and was left off.
+
+In the public-slice comparison, enabling `centroid_dead` increased macro F1 from 0.711 to 0.815 and mean spell F1 from 0.533 to 0.558. It added 108 false `D` labels on live frames and approximately 25,397 new `D` labels outside the graded public window, where their accuracy is unknown. These results are exploratory, not an independent estimate of generalisation.
 
 ## 4. Limitations and Future Work
 
@@ -153,7 +161,7 @@ With more complete tracking information, the pipeline could calculate a larger s
 
 ### Dead-ball coverage
 
-Dead ball remains the weakest part. Of the four dead-ball stretches on the public slice, two are now detected. One (20 s, ball tracked, no set-piece tag, median player speed about 1 m/s) is not detected by any signal tried, and the tail of a goal-kick stoppage is not covered because `goal_kick` has no window. No rule was tuned to these two. The start of the second period (frames 110808-113741, before the documented kick-off) is mostly labelled by possession rules instead of `D`. Ball tracking outages longer than 20 s are never labelled `D`.
+Dead-ball coverage remains imperfect. For the untagged, ball-tracked stoppage at frames 15889-16399, the centroid detector marks 390 of 511 ground-truth dead frames; it starts late and extends into live play. Goal kicks have no configured set-piece window, although other detectors can identify parts of a stoppage. The centroid rule may also flag slow live play, and its performance outside the public slice is unknown. The ball-lost detector alone does not mark outages longer than 20 s as dead.
 
 ### Future improvements
 
@@ -254,10 +262,12 @@ absence of blank cells. It checks the file format, not whether the predicted lab
 
 ### 5.6 Tests
 
-The tests are described in [`HYBRID_POSSESSION.md`](HYBRID_POSSESSION.md), section 7. `tests/test_hybrid_pipeline.py` checks the configurable hybrid code against the previous single-function version on random data (the default configuration reproduces the old labels exactly) and covers the touch, ball-lost and slow-window logic and the input errors:
+The tests are described in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 7. The centroid detector and its default configuration are covered by `tests/test_hybrid_possession.py` and `tests/test_pipeline.py`.
 
 ```bash
-python -m pytest tests/test_hybrid_pipeline.py
+PYTHONPATH=data-pipeline/tests python -m unittest \
+  test_hybrid_possession.CentroidDeadTests \
+  test_pipeline.PipelineTests.test_centroid_dead_is_enabled_by_default
 ```
 
 ---
