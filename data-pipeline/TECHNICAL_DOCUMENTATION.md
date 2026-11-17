@@ -29,8 +29,6 @@ The HMM captures relationships across multiple signals and neighbouring frames. 
 
 The result is one of four labels: `H` (home), `A` (away), `D` (dead ball) or `X` (unknown/abstain).
 
-Details: the HMM and its combination with the rule-based hybrid decision layer are described in [`HYBRID_PIPELINE.md`](HYBRID_PIPELINE.md); the earlier hybrid reference is in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md).
-
 ## 2. Assets used and how
 
 The final pipeline directly consumes two prepared data sources:
@@ -44,7 +42,7 @@ The executable pipeline does not consume a homography file or video stream: it d
 
 Smart Tagging intervals are contextual signals, not ground-truth possession labels. A set-piece tag identifies an event window; it does not, by itself, establish that play is stopped. No private ground-truth labels are used to fit the HMM or generate predictions.
 
-Dataset specifications and descriptions of the supplied assets are documented separately in [`DATA.md`](../DATA.md). The feature columns and the hybrid inputs are listed in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 2.
+The pipeline derives all features and hybrid inputs from these organiser-provided sources.
 
 ## 3. Possession rules
 
@@ -56,7 +54,7 @@ The HMM uses selected ball, player, team-shape and Smart Tagging features. Signe
 - `A`: frames in the lower 30%, outside set-piece windows.
 - `D`: frames inside a set-piece window with usable model observations.
 
-The model then estimates its parameters using Expectation-Maximisation and decodes the sequence using Viterbi. Learned states are mapped back to `H`, `A` and `D` using their distance to the initial anchor means. Missing feature dimensions are marginalised during decoding. A frame with no observed HMM feature is labelled `X`. Full details (features, anchors, parameters, diagnostics) are in [`HYBRID_PIPELINE.md`](HYBRID_PIPELINE.md).
+The model then estimates its parameters using Expectation-Maximisation and decodes the sequence using Viterbi. Learned states are mapped back to `H`, `A` and `D` using their distance to the initial anchor means. Missing feature dimensions are marginalised during decoding. A frame with no observed HMM feature is labelled `X`.
 
 The HMM's `D` and `X` predictions are not used by the hybrid selector; only its `H` and `A` predictions are eligible as fallback decisions. Dead-ball labels come from the dedicated detectors described below.
 
@@ -118,7 +116,7 @@ The hybrid layer uses ordered, first-match-wins selection:
 6. Smart Tagging
 7. HMM
 
-This is a priority system, not a weighted vote or confidence average. A component wins as soon as it provides a non-`X` opinion. Thus `centroid_dead` can assign `D` before geometry, tags or the HMM assign possession. If no component decides, the frame remains `X`. The earlier reference in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 4, shows how to trace why a frame got its label.
+This is a priority system, not a weighted vote or confidence average. A component wins as soon as it provides a non-`X` opinion. Thus `centroid_dead` can assign `D` before geometry, tags or the HMM assign possession. If no component decides, the frame remains `X`.
 
 After selection, the pipeline applies three smoothing steps:
 
@@ -129,8 +127,6 @@ After selection, the pipeline applies three smoothing steps:
 The current `dead_handling="gap"` setting temporarily treats dead-ball frames as unknown during smoothing and restores `D` afterwards. This can allow a short possession immediately after a stoppage to merge with the possession before it. Processing windows and smoothing do not cross period boundaries or gaps in frame numbers.
 
 ### 3.6 Options evaluated and not used
-
-The earlier table of measured options is in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 8; it predates the current centroid detector.
 
 Earlier options were assessed using a label-independent rule: the signal could fire on at most 1.0% of clearly live frames (ball inside the pitch, one team's nearest player within 1.5 m and the other's beyond 3.0 m, for at least 0.5 s), with preference for more dead-ball time among accepted settings. The current `centroid_dead` threshold was instead explored using the public ground-truth slice (frames 11185-18684), so it has not been independently validated. The slice contains only 17 possessions and 4 dead-ball stretches; one spell can materially change the headline score.
 
@@ -151,13 +147,11 @@ In the public-slice comparison, enabling `centroid_dead` increased macro F1 from
 
 ### Data completeness
 
-The main limitation of the current implementation is the availability and completeness of the provided tracking data.
+The organiser-provided tactical tracking data contains a row for every submission frame, so the final pipeline produces one possession label for each of the 199,319 frames. The limitation is incomplete tracking observations within some of those frames: the ball or one or more players may be untracked.
 
-The pipeline operates on the frames available in the tactical tracking dataset. Frames missing entirely from the input are not reconstructed or predicted. Similarly, frames with incomplete ball or player tracking may have insufficient information for some feature calculations and possession decisions.
+The current implementation does not interpolate or otherwise reconstruct missing ball and player observations before feature extraction. It uses the available signals, which can leave features unavailable or cause the hybrid decision layer to abstain when the evidence is insufficient.
 
-The current implementation does not interpolate missing tracking observations or reconstruct absent frames. Consequently, prediction coverage depends on the quality and completeness of the input data.
-
-With more complete tracking information, the pipeline could calculate a larger set of features and make predictions for more frames, potentially improving both prediction coverage and possession accuracy.
+An upstream tracking-reconstruction step could estimate missing ball and player positions before feature engineering. The reconstructed observations would then feed the existing feature and possession stages, potentially increasing usable evidence and improving possession accuracy while retaining complete submission-frame coverage.
 
 ### Dead-ball coverage
 
@@ -167,7 +161,7 @@ Dead-ball coverage remains imperfect. For the untagged, ball-tracked stoppage at
 
 Further development would focus on:
 
-- **Improving data coverage:** Investigate missing frames and incomplete player or ball tracking, and explore reliable methods to recover missing observations.
+- **Reconstructing tracking observations:** Evaluate interpolation or model-based reconstruction of missing ball and player positions upstream of feature engineering, then validate that reconstructed inputs improve possession decisions without creating false certainty.
 - **Improving possession detection:** Introduce more explicit ball-control and player-challenge detection to distinguish controlled possession from loose balls and contested situations.
 - **Refining decision rules:** Further evaluate geometric thresholds, dead-ball detection and component priorities against independently reviewed match situations; add a forced dead-ball rule for the period start before kick-off.
 - **Broader validation:** Test the approach on additional matches to understand how well the methodology generalises to different teams and playing styles.
@@ -262,7 +256,7 @@ absence of blank cells. It checks the file format, not whether the predicted lab
 
 ### 5.6 Tests
 
-The tests are described in [`HYBRID_POSSESSION.md`](stages/HYBRID_POSSESSION.md), section 7. The centroid detector and its default configuration are covered by `tests/test_hybrid_possession.py` and `tests/test_pipeline.py`.
+The centroid detector and its default configuration are covered by `tests/test_hybrid_possession.py` and `tests/test_pipeline.py`.
 
 ```bash
 PYTHONPATH=data-pipeline/tests python -m unittest \
@@ -272,7 +266,7 @@ PYTHONPATH=data-pipeline/tests python -m unittest \
 
 ---
 
-**Project:** More Than A Hack 2027  
-**Primary pipeline:** `data-pipeline/main.py`  
-**Hybrid implementation reference:** `data-pipeline/stages/hybrid_possession.py` and `HYBRID_POSSESSION.md`  
-**HMM and hybrid pipeline reference:** `HYBRID_PIPELINE.md`
+- **Project:** More Than A Hack 2027
+- **Primary pipeline:** `data-pipeline/main.py`
+- **Hybrid implementation:** `data-pipeline/stages/hybrid_possession.py`
+- **HMM implementation:** `data-pipeline/stages/hmm_possession.py`
