@@ -248,13 +248,13 @@ The pipeline writes outputs under `data-pipeline/output/`:
 Copy the generated file to the evaluation results folder:
 
 ```bash
-cp data-pipeline/output/hybrid_results.csv evaluation/results/merah_putih_results.csv
+cp data-pipeline/output/hybrid_results.csv evaluation/results/merah_putih.csv
 ```
 
 Validate the copied file before submission:
 
 ```bash
-python evaluation/validate_submission.py evaluation/results/merah_putih_results.csv
+python evaluation/validate_submission.py evaluation/results/merah_putih.csv
 ```
 
 The validator checks the `frame,label` header, all 199,319 frames in order, allowed labels and
